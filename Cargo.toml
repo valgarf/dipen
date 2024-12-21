@@ -1,0 +1,5 @@
+[workspace]
+resolver = "2"
+members = [ "petri-etcd-playground",
+    "petri-etcd-runner",
+]
