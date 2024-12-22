@@ -8,7 +8,8 @@ use std::{
 
 use derive_builder::Builder;
 use etcd_client::{
-    EventType, GetOptions, LeaseGrantOptions, PutOptions, WatchClient, WatchOptions,
+    DeleteOptions, EventType, GetOptions, KvClient, LeaseGrantOptions, PutOptions, Txn, TxnOp,
+    WatchClient, WatchOptions,
 };
 use tokio::{join, select, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
@@ -27,6 +28,13 @@ pub struct ETCDGate {
     lease: Option<i64>,
     keep_alive_join_handle: Option<JoinHandle<()>>,
     watching_join_handle: Option<JoinHandle<()>>,
+}
+
+pub struct ETCDTransitionGate {
+    client: KvClient,
+    transition_id: TransitionId,
+    prefix: String,
+    lease: i64,
 }
 
 #[derive(Builder)]
@@ -75,8 +83,8 @@ macro_rules! check_place_match {
     ($lhs:expr, $rhs:expr, $token_id:expr, $rev:expr) => {
         if ($lhs != $rhs) {
             Err(PetriError::InconsistentState(format!(
-                "Token '{}' seems to be in two places at once ({} and {}) during revision {}",
-                $token_id.0, $lhs.0, $rhs.0, $rev
+                "Token '{}' seems to be in two places at once ({} and {}) during revision {} ({}:{})",
+                $token_id.0, $lhs.0, $rhs.0, $rev, file!(), line!()
             )))
         } else {
             Ok(())
@@ -218,6 +226,17 @@ impl ETCDGate {
         Ok(())
     }
 
+    pub fn create_transition_gate(
+        &mut self,
+        transition_id: TransitionId,
+    ) -> Result<ETCDTransitionGate> {
+        Ok(ETCDTransitionGate {
+            client: self._client()?.kv_client(),
+            transition_id,
+            prefix: self.config.prefix.clone(),
+            lease: self._lease()?,
+        })
+    }
     #[tracing::instrument(level = "info", skip(builder), fields(transition_count = builder.transitions().len(), place_count = builder.transitions().len()) )]
     pub async fn assign_ids(&mut self, builder: &PetriNetBuilder) -> Result<PetriNetIds> {
         let cancel_token = self._cancel_token()?.clone();
@@ -269,7 +288,7 @@ impl ETCDGate {
             select! {
                 res = watcher_fut =>{ match res {
                     Err(PetriError::Cancelled()) => {}
-                    Err(err) => {warn!("Watching etcd for changes failed with {}.", err); cancel_token.cancel();}
+                    Err(err) => {error!("Watching etcd for changes failed with {}.", err); cancel_token.cancel();}
                     _ => {}
                 }}
                 _ = cancel_token.cancelled() => {}
@@ -493,8 +512,8 @@ impl ETCDGate {
                 } else if let Some((place2_id, transition_id)) = released.remove(&token_id) {
                     check_place_match!(place_id, place2_id, token_id, change_evt.revision)?;
                     // case (B2)
-                    change_evt.changes.push(NetChange::Place(place_id, transition_id, token_id));
                     change_evt.changes.push(NetChange::Update(token_id, transition_id, data));
+                    change_evt.changes.push(NetChange::Place(place_id, transition_id, token_id));
                 } else {
                     // case (B3)
                     change_evt.changes.push(NetChange::ExternalUpdate(token_id, data));
@@ -511,32 +530,26 @@ impl ETCDGate {
                         None
                     };
 
-                let opt_data_created =
-                    if let Some((place2_id, data_created)) = created.remove(&token_id) {
-                        check_place_match!(place_id, place2_id, token_id, change_evt.revision)?;
-                        Some(data_created)
-                    } else {
-                        None
-                    };
+                let opt_created = created.remove(&token_id);
 
-                match (opt_transition_id, opt_data_created) {
-                    (Some(transition_id), Some(data_created)) => {
+                match (opt_transition_id, opt_created) {
+                    (Some(transition_id), Some((pl_created, data_created))) => {
                         // case (C1)
-                        let c = NetChange::Place(place_id, transition_id, token_id);
-                        change_evt.changes.push(c);
                         if data_destroyed != data_created {
                             let c = NetChange::Update(token_id, transition_id, data_created);
                             change_evt.changes.push(c);
                         }
+                        let c = NetChange::Place(pl_created, transition_id, token_id);
+                        change_evt.changes.push(c);
                     }
                     (Some(transition_id), None) => {
                         // case (C2)
                         let c = NetChange::Delete(place_id, transition_id, token_id);
                         change_evt.changes.push(c);
                     }
-                    (None, Some(data_created)) => {
+                    (None, Some((pl_created, data_created))) => {
                         // case (C3)
-                        let c = NetChange::ExternalPlace(place_id, token_id);
+                        let c = NetChange::ExternalPlace(pl_created, token_id);
                         change_evt.changes.push(c);
                         if data_destroyed != data_created {
                             let c = NetChange::ExternalUpdate(token_id, data_created);
@@ -736,5 +749,70 @@ impl ETCDGate {
 impl Debug for ETCDGate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ETCDGate").field("lease", &self.lease.unwrap_or(-1)).finish()
+    }
+}
+
+// pub struct ETCDTransitionGate {
+//     client: KvClient,
+//     prefix: String,
+//     lease: i64,
+// }
+
+#[inline]
+fn _token_path(prefix: &str, pl_id: PlaceId, to_id: TokenId) -> String {
+    format!("{prefix}pl/{pl_id}/{to_id}", prefix = prefix, pl_id = pl_id.0, to_id = to_id.0)
+}
+
+#[inline]
+fn _token_taken_path(prefix: &str, pl_id: PlaceId, to_id: TokenId, tr_id: TransitionId) -> String {
+    format!("{to_path}/{tr_id}", to_path = _token_path(prefix, pl_id, to_id), tr_id = tr_id.0)
+}
+impl ETCDTransitionGate {
+    pub async fn start_transition(
+        &mut self,
+        take: impl IntoIterator<Item = (TokenId, PlaceId)>,
+    ) -> Result<()> {
+        // TODO: check locks
+        let txn = Txn::new().and_then(
+            take.into_iter()
+                .map(|(to_id, pl_id)| {
+                    TxnOp::put(
+                        _token_taken_path(&self.prefix, pl_id, to_id, self.transition_id),
+                        "",
+                        Some(PutOptions::new().with_lease(self.lease)),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        );
+        self.client.txn(txn).await?;
+        Ok(())
+    }
+
+    pub async fn end_transition(
+        &mut self,
+        place: impl IntoIterator<Item = (TokenId, PlaceId, PlaceId, Vec<u8>)>,
+    ) -> Result<()> {
+        // TODO: check locks + token is still at place + token is taken by this transition
+        let ops = place
+            .into_iter()
+            .flat_map(|(to_id, orig_pl_id, new_pl_id, data)| {
+                let delete_op = if orig_pl_id != new_pl_id {
+                    TxnOp::delete(
+                        _token_path(&self.prefix, orig_pl_id, to_id),
+                        Some(DeleteOptions::new().with_prefix()),
+                    )
+                } else {
+                    TxnOp::delete(
+                        _token_taken_path(&self.prefix, orig_pl_id, to_id, self.transition_id),
+                        None,
+                    )
+                };
+                let put_op = TxnOp::put(_token_path(&self.prefix, new_pl_id, to_id), data, None);
+                [delete_op, put_op]
+            })
+            .collect::<Vec<_>>();
+        let txn = Txn::new().and_then(ops);
+        self.client.txn(txn).await?;
+        Ok(())
     }
 }

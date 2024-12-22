@@ -6,7 +6,7 @@ use etcd_client::{
 };
 use petri_etcd_runner::{
     error::Result as PetriResult,
-    net::{Arc, PetriNetBuilder, Place, Transition},
+    net::{Arc, ArcVariant, PetriNetBuilder, Place, Transition},
     ETCDConfigBuilder, ETCDGate,
 };
 use tokio::{select, signal, time::sleep};
@@ -249,8 +249,10 @@ async fn playground2() -> PetriResult<()> {
     net.insert_place(Place::new("pl2"))?;
     net.insert_transition(Transition::new("tr1", "test-region"))?;
     net.insert_transition(Transition::new("tr2", "test-region"))?;
-    net.insert_arc(Arc::new("pl1", "tr1"))?;
-    net.insert_arc(Arc::new("pl2", "tr2"))?;
+    net.insert_arc(Arc::new("pl1", "tr1", ArcVariant::In))?;
+    net.insert_arc(Arc::new("pl2", "tr1", ArcVariant::Out))?;
+    net.insert_arc(Arc::new("pl2", "tr2", ArcVariant::In))?;
+    net.insert_arc(Arc::new("pl1", "tr2", ArcVariant::Out))?;
     let config = ETCDConfigBuilder::default()
         .endpoints(["localhost:2379"])
         .prefix("/petri-test/")
@@ -272,7 +274,7 @@ async fn main() -> PetriResult<()> {
                 | tracing_subscriber::fmt::format::FmtSpan::NEW,
         )
         .compact()
-        .with_env_filter(EnvFilter::try_new("info,petri_etcd_runner=trace").unwrap())
+        .with_env_filter(EnvFilter::try_new("info,petri_etcd_runner=debug").unwrap())
         .init();
 
     return playground2().await;

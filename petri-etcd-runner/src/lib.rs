@@ -3,7 +3,9 @@ mod etcd_gate;
 pub mod net;
 pub mod runner;
 
-pub use etcd_gate::{ETCDConfig, ETCDConfigBuilder, ETCDConfigBuilderError, ETCDGate};
+pub use etcd_gate::{
+    ETCDConfig, ETCDConfigBuilder, ETCDConfigBuilderError, ETCDGate, ETCDTransitionGate,
+};
 
 pub fn add(left: usize, right: usize) -> usize {
     left + right

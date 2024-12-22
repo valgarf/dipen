@@ -56,15 +56,33 @@ impl Transition {
     }
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub enum ArcVariant {
+    In,
+    Out,
+    InOut,
+    Cond,
+    OutCond,
+}
+
 #[derive(Clone)]
 pub struct Arc {
     place: String,
     transition: String,
+    variant: ArcVariant,
 }
 
 impl Arc {
-    pub fn new<S1: AsRef<str>, S2: AsRef<str>>(place: S1, transition: S2) -> Self {
-        Arc { place: place.as_ref().to_string(), transition: transition.as_ref().to_string() }
+    pub fn new<S1: AsRef<str>, S2: AsRef<str>>(
+        place: S1,
+        transition: S2,
+        variant: ArcVariant,
+    ) -> Self {
+        Arc {
+            place: place.as_ref().to_string(),
+            transition: transition.as_ref().to_string(),
+            variant,
+        }
     }
 
     pub fn place(&self) -> &str {
@@ -73,6 +91,9 @@ impl Arc {
 
     pub fn transition(&self) -> &str {
         &self.transition
+    }
+    pub fn variant(&self) -> ArcVariant {
+        self.variant
     }
 }
 

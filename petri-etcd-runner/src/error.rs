@@ -10,27 +10,27 @@ pub enum PetriError {
     // Redaction(String),
     // #[error("invalid header (expected {expected:?}, found {found:?})")]
     // InvalidHeader { expected: String, found: String },
-    #[error("Filesystem error")]
+    #[error("Filesystem error: {0}")]
     IOError(#[from] io::Error),
-    #[error("ETCD error")]
+    #[error("ETCD error: {0}")]
     ETCDError(#[from] etcd_client::Error),
-    #[error("Configuration errpr")]
+    #[error("Configuration errpr: {0}")]
     ETCDConfigError(#[from] ETCDConfigBuilderError),
     #[error("Not connected")]
     NotConnected(),
-    #[error("Conversion to/from utf8 failed")]
+    #[error("Conversion to/from utf8 failed: {0}")]
     UTF8ConversionError(#[from] Utf8Error),
-    #[error("Parsing a string into an integer failed")]
+    #[error("Parsing a string into an integer failed: {0}")]
     ParseError(#[from] ParseIntError),
-    #[error("Config error")]
+    #[error("Config error: {0}")]
     ConfigError(String),
     #[error("Action Cancelled")]
     Cancelled(),
-    #[error("Inappropriate value")]
+    #[error("Inappropriate value: {0}")]
     ValueError(String),
-    #[error("Other error")]
+    #[error("Other error: {0}")]
     Other(String),
-    #[error("State is inconsistent")]
+    #[error("State is inconsistent: {0}")]
     InconsistentState(String),
     #[error("Not implemented yet")]
     NotImplemented(),

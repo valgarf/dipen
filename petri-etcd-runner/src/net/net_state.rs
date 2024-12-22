@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::{
     Arc, NetChange, NetChangeEvent, Place, PlaceId, Token, TokenId, Transition, TransitionId,
@@ -48,7 +48,7 @@ macro_rules! assert_state {
         if ($value) {
             Ok(())
         } else {
-            Err(PetriError::InconsistentState($msg))
+            Err(PetriError::InconsistentState(format!("{} ({}:{})", $msg, file!(), line!())))
         }
     };
 }
@@ -70,15 +70,32 @@ impl PetriNet {
         &self.tokens
     }
 
-    pub fn apply_change_event(&mut self, evt: NetChangeEvent) -> Result<()> {
-        assert!(self.revision < evt.revision || self.revision == 0);
-        for change in evt.changes {
-            self._apply_change(change)?;
-        }
-        Ok(())
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
-    fn _apply_change(&mut self, change: NetChange) -> Result<()> {
+    pub fn apply_change_event(&mut self, evt: NetChangeEvent) -> Result<HashSet<PlaceId>> {
+        assert!(self.revision < evt.revision || self.revision == 0);
+        let mut modified_places = HashSet::<PlaceId>::new();
+        for change in evt.changes {
+            modified_places.extend(self._apply_change(change)?);
+        }
+        self.revision = evt.revision;
+        Ok(modified_places)
+
+        // // TODO could be optimized by storing all transitions connected to a place
+        // let mut check_transitions = HashSet::<TransitionId>::new();
+        // for (&(place_id, transition_id), arc) in &self.arcs {
+        //     if arc.variant() != ArcVariant::Out && modified_places.contains(&place_id) {
+        //         check_transitions.insert(transition_id);
+        //     }
+        // }
+        // Ok(check_transitions)
+    }
+
+    /// apply a change to the net and return modified places
+    fn _apply_change(&mut self, change: NetChange) -> Result<HashSet<PlaceId>> {
+        let mut modified = HashSet::new();
         match change {
             NetChange::Take(pl_id, tr_id, to_id) => {
                 let pl = get_place!(self, pl_id)?;
@@ -86,12 +103,15 @@ impl PetriNet {
                 let to = get_token!(self, to_id)?;
                 assert_state!(
                     to.position == TokenPosition::Place(pl_id),
-                    format!("Token '{}' at '{:?}', expected '{}'.", to_id.0, to.position, pl_id.0)
+                    format!(
+                        "Token '{}' at '{:?}', expected place '{}'.",
+                        to_id.0, to.position, pl_id.0
+                    )
                 )?;
                 assert_state!(
                     to.last_place == pl_id,
                     format!(
-                        "Token '{}' last place was '{}', expected '{}'.",
+                        "Token '{}' last place was '{}', expected place'{}'.",
                         to_id.0, to.last_place.0, pl_id.0
                     )
                 )?;
@@ -104,14 +124,19 @@ impl PetriNet {
                     tr.token_ids.insert(to_id),
                     format!("Token '{}' already at transition '{}'.", to_id.0, tr_id.0)
                 )?;
+                modified.insert(pl_id);
             }
             NetChange::Place(pl_id, tr_id, to_id) => {
                 let pl = get_place!(self, pl_id)?;
                 let tr = get_transition!(self, tr_id)?;
                 let to = get_token!(self, to_id)?;
+                modified.insert(to.last_place);
                 assert_state!(
                     to.position == TokenPosition::Transition(tr_id),
-                    format!("Token '{}' at '{:?}', expected '{}'.", to_id.0, to.position, tr_id.0)
+                    format!(
+                        "Token '{}' at '{:?}', expected transition '{}'.",
+                        to_id.0, to.position, tr_id.0
+                    )
                 )?;
                 to.position = TokenPosition::Place(pl_id);
                 to.last_place = pl_id;
@@ -123,18 +148,22 @@ impl PetriNet {
                     tr.token_ids.remove(&to_id),
                     format!("Token '{}' not found at transition '{}'.", to_id.0, tr_id.0)
                 )?;
+                modified.insert(pl_id);
             }
             NetChange::Delete(pl_id, tr_id, to_id) => {
                 let tr = get_transition!(self, tr_id)?;
                 let to = get_token!(self, to_id)?;
                 assert_state!(
                     to.position == TokenPosition::Transition(tr_id),
-                    format!("Token '{}' at '{:?}', expected '{}'.", to_id.0, to.position, tr_id.0)
+                    format!(
+                        "Token '{}' at '{:?}', expected transition '{}'.",
+                        to_id.0, to.position, tr_id.0
+                    )
                 )?;
                 assert_state!(
                     to.last_place == pl_id,
                     format!(
-                        "Token '{}' last place was '{}', expected '{}'.",
+                        "Token '{}' last place was '{}', expected place '{}'.",
                         to_id.0, to.last_place.0, pl_id.0
                     )
                 )?;
@@ -143,19 +172,25 @@ impl PetriNet {
                     format!("Token '{}' not found at transition '{}'.", to_id.0, tr_id.0)
                 )?;
                 self.tokens.remove(&to_id);
+                modified.insert(pl_id);
             }
             NetChange::Update(to_id, tr_id, data) => {
                 let to = get_token!(self, to_id)?;
                 assert_state!(
                     to.position == TokenPosition::Transition(tr_id),
-                    format!("Token '{}' at '{:?}', expected '{}'.", to_id.0, to.position, tr_id.0)
+                    format!(
+                        "Token '{}' at '{:?}', expected transition '{}'.",
+                        to_id.0, to.position, tr_id.0
+                    )
                 )?;
                 to.data = data;
+                modified.insert(to.last_place);
             }
             NetChange::Reset() => {
                 self.places.values_mut().for_each(|pl| pl.token_ids.clear());
                 self.transitions.values_mut().for_each(|tr| tr.token_ids.clear());
                 self.tokens.clear();
+                modified.extend(self.places.keys());
             }
             NetChange::ExternalPlace(pl_id, to_id) => {
                 let to = self
@@ -187,6 +222,8 @@ impl PetriNet {
                     }
                     to.position = TokenPosition::Place(pl_id);
                 }
+                modified.insert(to.last_place);
+                modified.insert(pl_id);
                 to.last_place = pl_id;
                 let pl = get_place!(self, pl_id)?;
                 pl.token_ids.insert(to_id); // we don't care if it already exists or not
@@ -196,7 +233,7 @@ impl PetriNet {
                 assert_state!(
                     to.last_place == pl_id,
                     format!(
-                        "Token '{}' last place was '{}', expected '{}'.",
+                        "Token '{}' last place was '{}', expected place '{}'.",
                         to_id.0, to.last_place.0, pl_id.0
                     )
                 )?;
@@ -205,7 +242,7 @@ impl PetriNet {
                         assert_state!(
                             cur_pl_id == pl_id,
                             format!(
-                                "Token '{}' position is place '{}', expected '{}'.",
+                                "Token '{}' position is place '{}', expected place '{}'.",
                                 to_id.0, cur_pl_id.0, pl_id.0
                             )
                         )?;
@@ -227,12 +264,14 @@ impl PetriNet {
                     }
                 }
                 self.tokens.remove(&to_id);
+                modified.insert(pl_id);
             }
             NetChange::ExternalUpdate(to_id, data) => {
                 let to = get_token!(self, to_id)?;
                 to.data = data;
+                modified.insert(to.last_place);
             }
         }
-        Ok(())
+        Ok(modified)
     }
 }
