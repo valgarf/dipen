@@ -38,6 +38,10 @@ impl PetriNetBuilder {
         &self.places
     }
 
+    pub fn arcs(&self) -> &HashMap<(String, String), Arc> {
+        &self.arcs
+    }
+
     pub fn is_empty(&self) -> bool {
         self.places.is_empty() && self.transitions.is_empty() && self.arcs.is_empty()
     }
@@ -53,9 +57,7 @@ impl PetriNetBuilder {
     ///
     /// Returns the existing transition for this name, or None if the name is not in use.
     pub fn insert_transition(&mut self, transition: Transition) -> Result<Option<Transition>> {
-        Ok(self
-            .transitions
-            .insert(transition.name().to_string(), transition))
+        Ok(self.transitions.insert(transition.name().to_string(), transition))
     }
 
     /// Insert arc into this petri net.
@@ -100,9 +102,7 @@ impl PetriNetBuilder {
         let mut result = PetriNetBuilder::default();
         let mut place_names = HashSet::<&str>::new();
         for tr_name in &transition_names {
-            result
-                .insert_transition(self.transitions.get(tr_name).unwrap().clone())
-                .unwrap();
+            result.insert_transition(self.transitions.get(tr_name).unwrap().clone()).unwrap();
             // Note: if these unwraps panic, we have a logic error here somewhere
         }
         for ((pl_name, tr_name), arc) in &self.arcs {
@@ -110,9 +110,7 @@ impl PetriNetBuilder {
                 continue;
             }
             if !place_names.contains(pl_name.as_str()) {
-                result
-                    .insert_place(self.places.get(pl_name).unwrap().clone())
-                    .unwrap();
+                result.insert_place(self.places.get(pl_name).unwrap().clone()).unwrap();
                 // Note: if these unwraps panic, we have a logic error here somewhere
                 place_names.insert(pl_name);
             }
@@ -145,36 +143,24 @@ impl PetriNetBuilder {
     pub fn build(&self, ids: &PetriNetIds) -> Result<PetriNet> {
         let mut net = PetriNet::default();
         for (tr_name, tr_data) in &self.transitions {
-            let tr_id = ids
-                .transitions
-                .get(tr_name)
-                .ok_or(PetriError::ValueError(format!(
-                    "Transition '{tr_name}' not found in provided ids."
-                )))?;
+            let tr_id = ids.transitions.get(tr_name).ok_or(PetriError::ValueError(format!(
+                "Transition '{tr_name}' not found in provided ids."
+            )))?;
             net.transitions.insert(*tr_id, tr_data.clone());
         }
         for (pl_name, pl_data) in &self.places {
-            let pl_id = ids
-                .places
-                .get(pl_name)
-                .ok_or(PetriError::ValueError(format!(
-                    "Place '{pl_name}' not found in provided ids."
-                )))?;
+            let pl_id = ids.places.get(pl_name).ok_or(PetriError::ValueError(format!(
+                "Place '{pl_name}' not found in provided ids."
+            )))?;
             net.places.insert(*pl_id, pl_data.clone());
         }
         for ((pl_name, tr_name), arc_data) in &self.arcs {
-            let pl_id = ids
-                .places
-                .get(pl_name)
-                .ok_or(PetriError::ValueError(format!(
-                    "Place '{pl_name}' not found in provided ids."
-                )))?;
-            let tr_id = ids
-                .transitions
-                .get(tr_name)
-                .ok_or(PetriError::ValueError(format!(
-                    "Transition '{tr_name}' not found in provided ids."
-                )))?;
+            let pl_id = ids.places.get(pl_name).ok_or(PetriError::ValueError(format!(
+                "Place '{pl_name}' not found in provided ids."
+            )))?;
+            let tr_id = ids.transitions.get(tr_name).ok_or(PetriError::ValueError(format!(
+                "Transition '{tr_name}' not found in provided ids."
+            )))?;
             net.arcs.insert((*pl_id, *tr_id), arc_data.clone());
         }
         Ok(net)

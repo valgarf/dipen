@@ -6,7 +6,12 @@ use etcd_client::{
 };
 use petri_etcd_runner::{
     error::Result as PetriResult,
-    net::{Arc, ArcVariant, PetriNetBuilder, Place, Transition},
+    net::{Arc, ArcVariant, PetriNetBuilder, Place, PlaceId, Transition, TransitionId},
+    runner::ExecutorRegistry,
+    transition::{
+        CheckStartResult, CreateArcContext, CreatePlaceContext, RunResult, TransitionExecutor,
+        ValidationResult,
+    },
     ETCDConfigBuilder, ETCDGate,
 };
 use tokio::{select, signal, time::sleep};
@@ -228,6 +233,62 @@ async fn playground() -> PetriResult<()> {
     Ok(())
 }
 
+struct SimpleTrans {
+    pl_in: PlaceId,
+    pl_out: PlaceId,
+    tr_id: TransitionId,
+}
+
+impl TransitionExecutor for SimpleTrans {
+    fn validate(ctx: &impl petri_etcd_runner::transition::ValidateContext) -> ValidationResult
+    where
+        Self: Sized,
+    {
+        info!("Validating transition {}", ctx.transition_name());
+        if ctx.arcs_in().next().is_some() && ctx.arcs_out().next().is_some() {
+            ValidationResult::success()
+        } else {
+            ValidationResult::failure("Need at least one incoming and one outgoing arc")
+        }
+    }
+
+    fn new(ctx: &impl petri_etcd_runner::transition::CreateContext) -> Self
+    where
+        Self: Sized,
+    {
+        info!("Creating transition {} (id: {})", ctx.transition_name(), ctx.transition_id().0);
+        let pl_in = ctx.arcs_in().next().unwrap().place_context().place_id();
+        let pl_out = ctx.arcs_out().next().unwrap().place_context().place_id();
+        SimpleTrans { pl_in, pl_out, tr_id: ctx.transition_id() }
+    }
+
+    fn check_start(
+        &mut self,
+        ctx: &mut impl petri_etcd_runner::transition::StartContext,
+    ) -> CheckStartResult {
+        info!("Check start of transition {}", self.tr_id.0);
+        let next_token = ctx.tokens_at(self.pl_in).next();
+        let mut result = CheckStartResult::build();
+        match next_token {
+            Some(to) => {
+                result.take(&to);
+                result.enabled()
+            }
+            None => result.disabled(Some(self.pl_in), None),
+        }
+    }
+
+    async fn run(&mut self, ctx: &mut impl petri_etcd_runner::transition::RunContext) -> RunResult {
+        info!("Running transition {}", self.tr_id.0);
+        // tokio::time::sleep(Duration::from_secs(1)).await;
+        let mut result = RunResult::build();
+        for to in ctx.tokens() {
+            result.place(to, self.pl_out);
+            result.update(to, format!("Placed by transition {}", self.tr_id.0).into());
+        }
+        result.result()
+    }
+}
 #[tracing::instrument(level = "info")]
 async fn playground2() -> PetriResult<()> {
     let shutdown_token = CancellationToken::new();
@@ -249,18 +310,21 @@ async fn playground2() -> PetriResult<()> {
     net.insert_place(Place::new("pl2"))?;
     net.insert_transition(Transition::new("tr1", "test-region"))?;
     net.insert_transition(Transition::new("tr2", "test-region"))?;
-    net.insert_arc(Arc::new("pl1", "tr1", ArcVariant::In))?;
-    net.insert_arc(Arc::new("pl2", "tr1", ArcVariant::Out))?;
-    net.insert_arc(Arc::new("pl2", "tr2", ArcVariant::In))?;
-    net.insert_arc(Arc::new("pl1", "tr2", ArcVariant::Out))?;
+    net.insert_arc(Arc::new("pl1", "tr1", ArcVariant::In, "".into()))?;
+    net.insert_arc(Arc::new("pl2", "tr1", ArcVariant::Out, "".into()))?;
+    net.insert_arc(Arc::new("pl2", "tr2", ArcVariant::In, "".into()))?;
+    net.insert_arc(Arc::new("pl1", "tr2", ArcVariant::Out, "".into()))?;
     let config = ETCDConfigBuilder::default()
         .endpoints(["localhost:2379"])
         .prefix("/petri-test/")
         .node_name("node1")
         .region("test-region")
         .build()?;
+    let mut executors = ExecutorRegistry::new();
+    executors.register::<SimpleTrans>("tr1");
+    executors.register::<SimpleTrans>("tr2");
     let etcd = ETCDGate::new(config);
-    petri_etcd_runner::runner::run(&net, etcd, shutdown_token.clone()).await?;
+    petri_etcd_runner::runner::run(&net, etcd, executors, shutdown_token.clone()).await?;
 
     info!("Bye.");
     Ok(())

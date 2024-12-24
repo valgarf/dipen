@@ -10,6 +10,7 @@ use crate::{
 
 #[derive(Default)]
 pub struct PetriNet {
+    // TODO: also keep a reference to currently 'taken' tokens in each place
     pub(super) places: HashMap<PlaceId, Place>,
     pub(super) transitions: HashMap<TransitionId, Transition>,
     pub(super) arcs: HashMap<(PlaceId, TransitionId), Arc>,
