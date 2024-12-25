@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::net::unix::pipe::Receiver;
 use tokio::select;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
@@ -282,6 +281,7 @@ impl TransitionRunner {
         drop(net);
 
         let mut wait_for: Option<net::PlaceId> = None;
+        let mut auto_recheck: Duration = Duration::default();
         loop {
             let wait_for_change = async {
                 match wait_for {
@@ -296,8 +296,18 @@ impl TransitionRunner {
                 }
             };
 
+            let auto_recheck_fut = async {
+                if !auto_recheck.is_zero() {
+                    tokio::time::sleep(auto_recheck).await;
+                } else {
+                    loop {
+                        tokio::time::sleep(Duration::from_secs(3600)).await;
+                    }
+                }
+            };
             select! {
                 _ = wait_for_change => {},
+                _ = auto_recheck_fut => {}
                 _ = self.cancel_token.cancelled()  => {return;}
             }
             for rec in self.place_rx.values_mut() {
@@ -310,6 +320,7 @@ impl TransitionRunner {
             let take_tokens = match start_res.choice {
                 CheckStartChoice::Disabled(data) => {
                     wait_for = data.wait_for;
+                    auto_recheck = data.auto_recheck;
                     // TODO: handle auto recheck
                     continue;
                 }

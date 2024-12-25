@@ -83,8 +83,8 @@ impl Debug for ETCDEvent<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ETCDEvent")
             .field("event_type", &self.event_type)
-            .field("key", &from_utf8(&self.key).unwrap_or("<not valid utf8>"))
-            .field("value", &from_utf8(&self.value).unwrap_or("<not valid utf8>"))
+            .field("key", &from_utf8(self.key).unwrap_or("<not valid utf8>"))
+            .field("value", &from_utf8(self.value).unwrap_or("<not valid utf8>"))
             .field("revision", &self.revision)
             .field("version", &self.version)
             .finish()
@@ -366,9 +366,6 @@ impl ETCDGate {
         );
         let (_watcher, mut stream) = watch.await?;
         while let Some(resp) = stream.message().await? {
-            let header =
-                resp.header().ok_or(PetriError::Other("header missing from etcd reply.".into()))?;
-            let revision = header.revision();
             let events: Vec<ETCDEvent> = resp
                 .events()
                 .iter()
