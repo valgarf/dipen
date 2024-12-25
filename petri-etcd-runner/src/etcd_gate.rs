@@ -79,6 +79,18 @@ struct ETCDEvent<'a> {
     version: i64,
 }
 
+impl Debug for ETCDEvent<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ETCDEvent")
+            .field("event_type", &self.event_type)
+            .field("key", &from_utf8(&self.key).unwrap_or("<not valid utf8>"))
+            .field("value", &from_utf8(&self.value).unwrap_or("<not valid utf8>"))
+            .field("revision", &self.revision)
+            .field("version", &self.version)
+            .finish()
+    }
+}
+
 macro_rules! check_place_match {
     ($lhs:expr, $rhs:expr, $token_id:expr, $rev:expr) => {
         if ($lhs != $rhs) {
@@ -368,7 +380,7 @@ impl ETCDGate {
                     } else {
                         evt.prev_kv().unwrap().value()
                     },
-                    revision,
+                    revision: evt.kv().unwrap().mod_revision(),
                     version: evt.kv().unwrap().version(),
                 })
                 .collect();
@@ -397,6 +409,11 @@ impl ETCDGate {
         let mut released = HashMap::<TokenId, (PlaceId, TransitionId)>::new();
         for chunk in events.chunk_by(|e1, e2| e1.revision == e2.revision) {
             // a single revision
+
+            //// debug code:
+            // let chunk = chunk.iter().collect::<Vec<_>>();
+            // warn!("New chunk: {:?}", chunk);
+
             let mut change_evt = NetChangeEvent::new(chunk.first().unwrap().revision as u64);
             destroyed.clear();
             created.clear();
@@ -791,7 +808,7 @@ impl ETCDTransitionGate {
     pub async fn end_transition(
         &mut self,
         place: impl IntoIterator<Item = (TokenId, PlaceId, PlaceId, Vec<u8>)>,
-    ) -> Result<()> {
+    ) -> Result<u64> {
         // TODO: check locks + token is still at place + token is taken by this transition
         let ops = place
             .into_iter()
@@ -812,7 +829,9 @@ impl ETCDTransitionGate {
             })
             .collect::<Vec<_>>();
         let txn = Txn::new().and_then(ops);
-        self.client.txn(txn).await?;
-        Ok(())
+        let resp = self.client.txn(txn).await?;
+        let header =
+            resp.header().ok_or(PetriError::Other("header missing from etcd reply.".into()))?;
+        Ok(header.revision() as u64)
     }
 }

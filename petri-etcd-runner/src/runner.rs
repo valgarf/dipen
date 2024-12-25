@@ -101,6 +101,7 @@ pub async fn run(
             receivers.entry(tr_id).or_default().insert(pl_id, pl_rx[&pl_id].clone());
         }
         let transition_ids: Vec<TransitionId> = net.transitions().keys().copied().collect();
+        let (tx_revision, rx_revision) = tokio::sync::watch::channel(0u64);
         let net_lock = Arc::new(RwLock::new(net));
         let net_read_guard = net_lock.read().await;
         let mut transition_tasks = JoinSet::<()>::new();
@@ -111,7 +112,8 @@ pub async fn run(
             let etcd_gate = etcd.create_transition_gate(transition_id)?;
             let tr_name = net_read_guard.transitions().get(&transition_id).unwrap().name();
             let exec = executors.dispatcher.get(tr_name).unwrap().clone_empty();
-            let runner = TransitionRunner {cancel_token, net_lock, etcd_gate, transition_id, place_rx, exec};
+            let rx_revision = rx_revision.clone();
+            let runner = TransitionRunner {cancel_token, net_lock, etcd_gate, transition_id, place_rx, exec, rx_revision};
             transition_tasks.spawn(runner.run_transition()); 
         }
 
@@ -157,8 +159,10 @@ pub async fn run(
                 if net_guard.is_none() {
                     net_guard = Some(net_lock.write().await);
                 }
+                let mut revision = 0u64;
                 for evt in event_buffer.drain(..) {
                     debug!("Change: {}", evt);
+                    revision = evt.revision;
                     let pl_id_to_notify = net_guard.as_mut().unwrap().apply_change_event(evt)?;
                     for pl_id in pl_id_to_notify {
                         let _ = pl_tx[&pl_id].send(net_guard.as_mut().unwrap().revision());
@@ -171,6 +175,9 @@ pub async fn run(
                     // always handle change events before doing anything else
                     continue;
                 }
+                let _ = tx_revision.send(revision); 
+                // NOTE: tx_revision can only be closed if all transition runners are done.
+                // Error can be ignored here, we handle that case elsewhere.
             }
             drop(net_guard.take());
         }

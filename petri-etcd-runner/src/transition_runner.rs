@@ -4,10 +4,11 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::net::unix::pipe::Receiver;
 use tokio::select;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
-use tracing::trace;
+use tracing::{error, trace};
 
 use crate::net::{self, PetriNet, PlaceId, TokenId, TransitionId};
 use crate::transition::{
@@ -24,6 +25,7 @@ pub struct TransitionRunner {
     pub(crate) net_lock: Arc<RwLock<net::PetriNet>>,
     pub(crate) place_rx: HashMap<net::PlaceId, tokio::sync::watch::Receiver<u64>>,
     pub(crate) exec: Box<dyn TransitionExecutorDispatch>,
+    pub(crate) rx_revision: tokio::sync::watch::Receiver<u64>,
 }
 
 // # context implementations
@@ -281,8 +283,6 @@ impl TransitionRunner {
 
         let mut wait_for: Option<net::PlaceId> = None;
         loop {
-            // FIXME: should not fail without the sleep!
-            tokio::time::sleep(Duration::from_millis(100)).await;
             let wait_for_change = async {
                 match wait_for {
                     None => {
@@ -343,8 +343,19 @@ impl TransitionRunner {
             };
 
             // TODO: acquire locks on output places
-            let _ = self.etcd_gate.end_transition(res.place).await;
+            let revision = match self.etcd_gate.end_transition(res.place).await {
+                Ok(revision) => revision,
+                Err(err) => {
+                    error!("End transition failed with error: {}", err);
+                    return;
+                }
+            };
             // TODO: release locks
+
+            select! {
+                _ = self.rx_revision.wait_for(move |&rev| {rev>=revision}) => {},
+                _ = self.cancel_token.cancelled()  => {return;}
+            }
 
             trace!("Finished transition.");
         }
