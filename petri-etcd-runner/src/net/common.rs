@@ -11,6 +11,7 @@ pub struct TokenId(pub u64);
 pub struct Place {
     name: String,
     pub(super) token_ids: HashSet<TokenId>,
+    // pub(super) taken_token_ids: HashMap<TokenId, Transition>,
 }
 
 impl Place {

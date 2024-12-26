@@ -3,6 +3,7 @@ use std::{
     collections::{HashMap, HashSet},
     fmt::Debug,
     str::from_utf8,
+    sync::Arc,
     time::Duration,
 };
 
@@ -20,6 +21,7 @@ use crate::{
     net::{
         NetChange, NetChangeEvent, PetriNetBuilder, PetriNetIds, PlaceId, TokenId, TransitionId,
     },
+    place_locks::PlaceLock,
 };
 pub struct ETCDGate {
     pub(crate) config: ETCDConfig,
@@ -28,6 +30,7 @@ pub struct ETCDGate {
     lease: Option<i64>,
     keep_alive_join_handle: Option<JoinHandle<()>>,
     watching_join_handle: Option<JoinHandle<()>>,
+    place_locks: HashMap<PlaceId, Arc<PlaceLock>>,
 }
 
 pub struct ETCDTransitionGate {
@@ -148,6 +151,7 @@ impl ETCDGate {
             lease: None,
             keep_alive_join_handle: None,
             watching_join_handle: None,
+            place_locks: Default::default(),
         }
     }
 
@@ -165,7 +169,7 @@ impl ETCDGate {
             self._get_lease().await?;
             self.keep_alive_join_handle = Some(tokio::spawn(ETCDGate::_keep_alive(
                 self._cancel_token()?.clone(),
-                self._client()?.lease_client(),
+                self._client_mut()?.lease_client(),
                 self._lease()?,
                 self.config.lease_ttl,
             )));
@@ -206,7 +210,7 @@ impl ETCDGate {
         let election_name =
             self.config.prefix.clone() + "region/" + self.config.region.as_ref() + "/election";
         let lease_id = self._lease()?;
-        let mut election_client = self._client()?.election_client();
+        let mut election_client = self._client_mut()?.election_client();
         let op = election_client.campaign(
             election_name.clone(),
             self.config.node_name.as_ref() as &str,
@@ -243,7 +247,7 @@ impl ETCDGate {
         transition_id: TransitionId,
     ) -> Result<ETCDTransitionGate> {
         Ok(ETCDTransitionGate {
-            client: self._client()?.kv_client(),
+            client: self._client_mut()?.kv_client(),
             transition_id,
             prefix: self.config.prefix.clone(),
             lease: self._lease()?,
@@ -285,7 +289,7 @@ impl ETCDGate {
     ) -> Result<()> {
         let revision = self._create_initial_events(&tx, &place_ids).await?;
         let prefix = self.config.prefix.clone();
-        let watch_client = self._client()?.watch_client();
+        let watch_client = self._client_mut()?.watch_client();
         let cancel_token = self._cancel_token()?.clone();
         self.watching_join_handle = Some(tokio::spawn(async move {
             let watcher_fut = ETCDGate::_watch_events(
@@ -309,6 +313,18 @@ impl ETCDGate {
         Ok(())
     }
 
+    pub fn place_lock(&mut self, pl_id: PlaceId) -> Result<Arc<PlaceLock>> {
+        let lease = self._lease()?;
+        let prefix = &self.config.prefix;
+        // Note: this seems inefficient (depending on clone cost)
+        // Will hopefully not be called too often
+        let client = self._client()?.clone();
+        let place_lock = self.place_locks.entry(pl_id).or_insert_with(|| {
+            Arc::new(PlaceLock::new(client.lock_client(), prefix.clone(), pl_id, lease))
+        });
+        Ok(place_lock.clone())
+    }
+
     async fn _create_initial_events(
         &mut self,
         tx: &tokio::sync::mpsc::Sender<NetChangeEvent>,
@@ -319,7 +335,7 @@ impl ETCDGate {
         initial_event.changes.push(NetChange::Reset());
 
         // query all data for the initial event
-        let mut kv_client = self._client()?.kv_client();
+        let mut kv_client = self._client_mut()?.kv_client();
         let resp = kv_client
             .get(
                 self.config.prefix.clone() + "pl/",
@@ -430,34 +446,38 @@ impl ETCDGate {
                 if !place_ids.contains(&place_id) {
                     continue;
                 }
-                let token_id = match split[2].parse() {
-                    Ok(v) => TokenId(v),
-                    Err(_) => continue,
-                };
-                if split.len() > 3 {
-                    let transition_id = match split[3].parse() {
-                        Ok(v) => TransitionId(v),
+                if split[2] == "lock" && split.len() == 4 {
+                    if evt.event_type == EventType::Put {}
+                } else {
+                    let token_id = match split[2].parse() {
+                        Ok(v) => TokenId(v),
                         Err(_) => continue,
                     };
-                    match evt.event_type {
-                        EventType::Put => {
-                            taken.insert(token_id, (place_id, transition_id));
-                        }
-                        EventType::Delete => {
-                            released.insert(token_id, (place_id, transition_id));
-                        }
-                    }
-                } else {
-                    match evt.event_type {
-                        EventType::Put => {
-                            if evt.version == 1 {
-                                created.insert(token_id, (place_id, evt.value.into()));
-                            } else {
-                                updated.insert(token_id, (place_id, evt.value.into()));
+                    if split.len() > 3 {
+                        let transition_id = match split[3].parse() {
+                            Ok(v) => TransitionId(v),
+                            Err(_) => continue,
+                        };
+                        match evt.event_type {
+                            EventType::Put => {
+                                taken.insert(token_id, (place_id, transition_id));
+                            }
+                            EventType::Delete => {
+                                released.insert(token_id, (place_id, transition_id));
                             }
                         }
-                        EventType::Delete => {
-                            destroyed.insert(token_id, (place_id, evt.value.into()));
+                    } else {
+                        match evt.event_type {
+                            EventType::Put => {
+                                if evt.version == 1 {
+                                    created.insert(token_id, (place_id, evt.value.into()));
+                                } else {
+                                    updated.insert(token_id, (place_id, evt.value.into()));
+                                }
+                            }
+                            EventType::Delete => {
+                                destroyed.insert(token_id, (place_id, evt.value.into()));
+                            }
                         }
                     }
                 }
@@ -611,8 +631,10 @@ impl ETCDGate {
 
     async fn _get_next_id(&mut self) -> Result<i64> {
         let counter_name = self.config.prefix.clone() + "id_generator";
-        let resp =
-            self._client()?.put(counter_name, [], Some(PutOptions::new().with_prev_key())).await?;
+        let resp = self
+            ._client_mut()?
+            .put(counter_name, [], Some(PutOptions::new().with_prev_key()))
+            .await?;
         let version = match resp.prev_key() {
             Some(key) => key.version() + 1,
             None => 1,
@@ -621,7 +643,7 @@ impl ETCDGate {
     }
 
     async fn _get_or_assign_id(&mut self, key: String) -> Result<i64> {
-        let mut kv = self._client()?.kv_client();
+        let mut kv = self._client_mut()?.kv_client();
         let resp = kv.get(key.clone(), None).await?;
         let id: i64 = if resp.kvs().is_empty() {
             // safeguard with some kind of lock? unlikely to be a problem here
@@ -636,7 +658,7 @@ impl ETCDGate {
     }
 
     async fn _check_or_assign_region(&mut self, key: String) -> Result<()> {
-        let mut kv = self._client()?.kv_client();
+        let mut kv = self._client_mut()?.kv_client();
         let resp = kv.get(key.clone(), None).await?;
         if resp.kvs().is_empty() {
             // safeguard with some kind of lock? unlikely to be a problem here
@@ -652,7 +674,14 @@ impl ETCDGate {
         Ok(())
     }
 
-    fn _client(&mut self) -> Result<&mut etcd_client::Client> {
+    fn _client(&self) -> Result<&etcd_client::Client> {
+        match self.client.as_ref() {
+            Some(client) => Ok(client),
+            None => Err(PetriError::NotConnected()),
+        }
+    }
+
+    fn _client_mut(&mut self) -> Result<&mut etcd_client::Client> {
         match self.client.as_mut() {
             Some(client) => Ok(client),
             None => Err(PetriError::NotConnected()),
@@ -741,7 +770,7 @@ impl ETCDGate {
             opts = opts.with_id(lease_id);
         }
         let grant_res = self
-            ._client()?
+            ._client_mut()?
             .lease_client()
             .grant(self.config.lease_ttl.as_secs() as i64, Some(opts))
             .await;
@@ -766,12 +795,6 @@ impl Debug for ETCDGate {
     }
 }
 
-// pub struct ETCDTransitionGate {
-//     client: KvClient,
-//     prefix: String,
-//     lease: i64,
-// }
-
 #[inline]
 fn _token_path(prefix: &str, pl_id: PlaceId, to_id: TokenId) -> String {
     format!("{prefix}pl/{pl_id}/{to_id}", prefix = prefix, pl_id = pl_id.0, to_id = to_id.0)
@@ -785,7 +808,7 @@ impl ETCDTransitionGate {
     pub async fn start_transition(
         &mut self,
         take: impl IntoIterator<Item = (TokenId, PlaceId)>,
-    ) -> Result<()> {
+    ) -> Result<u64> {
         // TODO: check locks
         let txn = Txn::new().and_then(
             take.into_iter()
@@ -798,8 +821,18 @@ impl ETCDTransitionGate {
                 })
                 .collect::<Vec<_>>(),
         );
-        self.client.txn(txn).await?;
-        Ok(())
+        let res = self.client.txn(txn).await?;
+        if res.succeeded() {
+            Ok(res
+                .header()
+                .expect("Missing header from etcd in 'start_transition' call.")
+                .revision() as u64)
+        } else {
+            Err(PetriError::InconsistentState(format!(
+                "Failed to execute transaction on etcd to start transition '{}'",
+                self.transition_id.0
+            )))
+        }
     }
 
     pub async fn end_transition(

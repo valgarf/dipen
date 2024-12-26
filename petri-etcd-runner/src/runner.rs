@@ -8,6 +8,7 @@ use tracing::{debug, trace, warn};
 
 use crate::error::{PetriError, Result};
 use crate::net::{ArcVariant, NetChangeEvent, PetriNet, PetriNetBuilder, PlaceId, TransitionId};
+use crate::place_locks::PlaceLock;
 use crate::transition::TransitionExecutor;
 use crate::transition_runner::{TransitionExecutorDispatch, TransitionExecutorDispatchStruct, TransitionRunner, ValidateContextStruct};
 use crate::ETCDGate;
@@ -22,7 +23,7 @@ pub struct ExecutorRegistry {
 
 impl ExecutorRegistry {
     pub fn new() -> Self {Self::default()}
-    pub fn register<T: TransitionExecutor + Send + 'static>(&mut self, transition_name: &str) {
+    pub fn register<T: TransitionExecutor + Send + Sync + 'static>(&mut self, transition_name: &str) {
         self.dispatcher.insert(
             transition_name.into(), 
             Box::new(
@@ -34,7 +35,7 @@ impl ExecutorRegistry {
 
 #[tracing::instrument(level = "info", skip_all, fields(region=etcd.config.region))]
 pub async fn run(
-    net_builder: &PetriNetBuilder,
+    net_builder: Arc<PetriNetBuilder>,
     mut etcd: ETCDGate,
     executors: ExecutorRegistry,
     cancel_token: CancellationToken,
@@ -100,6 +101,13 @@ pub async fn run(
             }
             receivers.entry(tr_id).or_default().insert(pl_id, pl_rx[&pl_id].clone());
         }
+
+        let mut place_locks_tr: HashMap<TransitionId, HashMap<PlaceId, Arc<PlaceLock>>> = HashMap::new();
+        for &(pl_id, tr_id) in net.arcs().keys() {
+            let place_locks = place_locks_tr.entry(tr_id).or_default();
+            place_locks.insert(pl_id, etcd.place_lock(pl_id)?);
+        }
+
         let transition_ids: Vec<TransitionId> = net.transitions().keys().copied().collect();
         let (tx_revision, rx_revision) = tokio::sync::watch::channel(0u64);
         let net_lock = Arc::new(RwLock::new(net));
@@ -107,13 +115,14 @@ pub async fn run(
         let mut transition_tasks = JoinSet::<()>::new();
         for transition_id in transition_ids {
             let place_rx = receivers.remove(&transition_id).unwrap();
+            let place_locks = place_locks_tr.remove(&transition_id).unwrap();
             let net_lock = Arc::clone(&net_lock);
             let cancel_token = cancel_token.clone();
             let etcd_gate = etcd.create_transition_gate(transition_id)?;
             let tr_name = net_read_guard.transitions().get(&transition_id).unwrap().name();
             let exec = executors.dispatcher.get(tr_name).unwrap().clone_empty();
             let rx_revision = rx_revision.clone();
-            let runner = TransitionRunner {cancel_token, net_lock, etcd_gate, transition_id, place_rx, exec, rx_revision};
+            let runner = TransitionRunner {cancel_token, net_lock, etcd_gate, transition_id, place_rx, exec, rx_revision, place_locks};
             transition_tasks.spawn(runner.run_transition()); 
         }
 

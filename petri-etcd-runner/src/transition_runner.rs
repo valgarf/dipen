@@ -1,15 +1,16 @@
 use futures::future::select_all;
 use futures::FutureExt;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::select;
-use tokio::sync::RwLock;
+use tokio::sync::{MutexGuard, RwLock};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, trace};
 
 use crate::net::{self, PetriNet, PlaceId, TokenId, TransitionId};
+use crate::place_locks::{PlaceLock, PlaceLockData};
 use crate::transition::{
     CheckStartChoice, CheckStartResult, CreateArcContext, CreateContext, CreatePlaceContext,
     RunContext, RunResult, RunTokenContext, StartContext, StartTokenContext, TransitionExecutor,
@@ -17,22 +18,23 @@ use crate::transition::{
 };
 use crate::ETCDTransitionGate;
 
-pub struct TransitionRunner {
-    pub(crate) cancel_token: CancellationToken,
-    pub(crate) transition_id: net::TransitionId,
-    pub(crate) etcd_gate: ETCDTransitionGate,
-    pub(crate) net_lock: Arc<RwLock<net::PetriNet>>,
-    pub(crate) place_rx: HashMap<net::PlaceId, tokio::sync::watch::Receiver<u64>>,
-    pub(crate) exec: Box<dyn TransitionExecutorDispatch>,
-    pub(crate) rx_revision: tokio::sync::watch::Receiver<u64>,
+pub(crate) struct TransitionRunner {
+    pub cancel_token: CancellationToken,
+    pub transition_id: net::TransitionId,
+    pub etcd_gate: ETCDTransitionGate,
+    pub net_lock: Arc<RwLock<net::PetriNet>>,
+    pub place_rx: HashMap<net::PlaceId, tokio::sync::watch::Receiver<u64>>,
+    pub exec: Box<dyn TransitionExecutorDispatch>,
+    pub rx_revision: tokio::sync::watch::Receiver<u64>,
+    pub place_locks: HashMap<net::PlaceId, Arc<PlaceLock>>,
 }
 
 // # context implementations
 // ## validate context
 pub(crate) struct ValidateContextStruct<'a> {
-    pub(crate) net: &'a net::PetriNetBuilder,
-    pub(crate) transition_name: &'a str,
-    pub(crate) arcs: Vec<&'a net::Arc>,
+    pub net: &'a net::PetriNetBuilder,
+    pub transition_name: &'a str,
+    pub arcs: Vec<&'a net::Arc>,
 }
 struct ValidateArcContextStruct<'a> {
     arc: &'a net::Arc,
@@ -213,7 +215,7 @@ impl RunTokenContext for RunTokenContextStruct {
 }
 
 // ## dispatch
-pub trait TransitionExecutorDispatch: Send {
+pub trait TransitionExecutorDispatch: Send + Sync {
     fn clone_empty(&self) -> Box<dyn TransitionExecutorDispatch>;
     fn validate(&self, ctx: &ValidateContextStruct) -> ValidationResult;
     fn create(&mut self, ctx: &CreateContextStruct);
@@ -229,7 +231,7 @@ pub(crate) struct TransitionExecutorDispatchStruct<T: TransitionExecutor> {
     pub(crate) executor: Option<T>,
 }
 
-impl<T: TransitionExecutor + Send + 'static> TransitionExecutorDispatch
+impl<T: TransitionExecutor + Send + Sync + 'static> TransitionExecutorDispatch
     for TransitionExecutorDispatchStruct<T>
 {
     fn clone_empty(&self) -> Box<dyn TransitionExecutorDispatch> {
@@ -314,6 +316,48 @@ impl TransitionRunner {
                 rec.mark_unchanged();
             }
 
+            // check with current state without locking
+            let net = self.net_lock.read().await;
+            let mut ctx = StartContextStruct::new(&net);
+            let start_res = self.exec.check_start(&mut ctx);
+            match start_res.choice {
+                CheckStartChoice::Disabled(data) => {
+                    wait_for = data.wait_for;
+                    auto_recheck = data.auto_recheck;
+                    // TODO: handle auto recheck
+                    continue;
+                }
+                CheckStartChoice::Enabled(_) => {}
+            };
+            drop(net);
+            // we believe we could fire, lets lock all relevant places, wait for a revision matching
+            // the locks and then check again
+            let mut locks = self
+                .place_locks
+                .values()
+                .filter(|pl_lock| self.place_rx.contains_key(&pl_lock.place_id))
+                // TODO: would be much nicer if the net would provide the list of relevant places
+                .collect::<Vec<_>>();
+            locks.sort_by_key(|pl_lock| pl_lock.place_id);
+            let mut guards: Vec<MutexGuard<PlaceLockData>> = Vec::with_capacity(locks.len());
+            for l in locks {
+                match l.acquire().await {
+                    Ok(guard) => guards.push(guard),
+                    Err(err) => {
+                        error!(
+                            "Lock acquisition of place '{}' failed with error: {}",
+                            l.place_id.0, err
+                        );
+                        return;
+                    }
+                };
+            }
+            let min_revision = guards.iter().map(|g| g.min_revision).max().unwrap_or(0);
+            select! {
+                _ = self.rx_revision.wait_for(move |&rev| {rev>=min_revision}) => {},
+                _ = self.cancel_token.cancelled()  => {return;}
+            }
+
             let net = self.net_lock.read().await;
             let mut ctx = StartContextStruct::new(&net);
             let start_res = self.exec.check_start(&mut ctx);
@@ -326,11 +370,21 @@ impl TransitionRunner {
                 }
                 CheckStartChoice::Enabled(data) => data.take,
             };
-            // TODO: locking and check again afterwards
             trace!("Running transition.");
-
-            let _ = self.etcd_gate.start_transition(take_tokens.clone()).await;
-
+            // TODO: provide fencing tokens
+            let new_revision = match self.etcd_gate.start_transition(take_tokens.clone()).await {
+                Ok(new_revision) => new_revision,
+                Err(err) => {
+                    error!(
+                        "Start transition '{}' via etcd failed with error: {}",
+                        self.transition_id.0, err
+                    );
+                    return;
+                }
+            };
+            for g in &mut guards {
+                g.min_revision = new_revision;
+            }
             let mut ctx = RunContextStruct {
                 tokens: take_tokens
                     .into_iter()
@@ -341,19 +395,44 @@ impl TransitionRunner {
                     })
                     .collect(),
             };
-
-            // TODO: release locks
             drop(net);
+            drop(guards);
 
             let op = self.exec.run(&mut ctx);
-
             let res = select! {
                 res = op => {res},
                 _ = self.cancel_token.cancelled()  => {return;}
                 // NOTE: if we want external cancellation, wait for it here
             };
 
-            // TODO: acquire locks on output places
+            // We are done, lock output places
+            let target_places: HashSet<PlaceId> =
+                res.place.iter().map(|&(_, _, target, _)| target).collect();
+            let mut locks = target_places
+                .iter()
+                .map(|pl_id| self.place_locks.get(pl_id).unwrap())
+                .collect::<Vec<_>>();
+            locks.sort_by_key(|pl_lock| pl_lock.place_id);
+            let mut guards: Vec<MutexGuard<PlaceLockData>> = Vec::with_capacity(locks.len());
+            for l in locks {
+                match l.acquire().await {
+                    Ok(guard) => guards.push(guard),
+                    Err(err) => {
+                        error!(
+                            "Lock acquisition of place '{}' failed with error: {}",
+                            l.place_id.0, err
+                        );
+                        return;
+                    }
+                };
+            }
+            let min_revision = guards.iter().map(|g| g.min_revision).max().unwrap_or(0);
+            select! {
+                _ = self.rx_revision.wait_for(move |&rev| {rev>=min_revision}) => {},
+                _ = self.cancel_token.cancelled()  => {return;}
+            }
+
+            // TODO: use fencing tokens to ensure we still have the locks
             let revision = match self.etcd_gate.end_transition(res.place).await {
                 Ok(revision) => revision,
                 Err(err) => {
@@ -361,7 +440,7 @@ impl TransitionRunner {
                     return;
                 }
             };
-            // TODO: release locks
+            drop(guards);
 
             select! {
                 _ = self.rx_revision.wait_for(move |&rev| {rev>=revision}) => {},

@@ -100,6 +100,7 @@ impl PetriNet {
         match change {
             NetChange::Take(pl_id, tr_id, to_id) => {
                 let pl = get_place!(self, pl_id)?;
+                // TODO: transition might be unknown -> store token's current transition
                 let tr = get_transition!(self, tr_id)?;
                 let to = get_token!(self, to_id)?;
                 assert_state!(
