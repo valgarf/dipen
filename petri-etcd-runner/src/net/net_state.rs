@@ -25,16 +25,6 @@ macro_rules! get_place {
         })
     };
 }
-macro_rules! get_transition {
-    ($self:expr, $transition_id:expr) => {
-        $self.transitions.get_mut(&$transition_id).ok_or_else(|| {
-            PetriError::InconsistentState(format!(
-                "Could not find transition '{}'",
-                $transition_id.0
-            ))
-        })
-    };
-}
 
 macro_rules! get_token {
     ($self:expr, $token_id:expr) => {
@@ -100,8 +90,7 @@ impl PetriNet {
         match change {
             NetChange::Take(pl_id, tr_id, to_id) => {
                 let pl = get_place!(self, pl_id)?;
-                // TODO: transition might be unknown -> store token's current transition
-                let tr = get_transition!(self, tr_id)?;
+                let tr = self.transitions.get_mut(&tr_id);
                 let to = get_token!(self, to_id)?;
                 assert_state!(
                     to.position == TokenPosition::Place(pl_id),
@@ -123,15 +112,22 @@ impl PetriNet {
                     format!("Token '{}' not found at place '{}'.", to_id.0, pl_id.0)
                 )?;
                 assert_state!(
-                    tr.token_ids.insert(to_id),
-                    format!("Token '{}' already at transition '{}'.", to_id.0, tr_id.0)
+                    pl.taken_token_ids.insert(to_id, tr_id).is_none(),
+                    format!("Token '{}' already taken from place '{}'.", to_id.0, pl_id.0)
                 )?;
+
+                if let Some(tr) = tr {
+                    assert_state!(
+                        tr.token_ids.insert(to_id),
+                        format!("Token '{}' already at transition '{}'.", to_id.0, tr_id.0)
+                    )?;
+                }
                 modified.insert(pl_id);
             }
             NetChange::Place(pl_id, tr_id, to_id) => {
-                let pl = get_place!(self, pl_id)?;
-                let tr = get_transition!(self, tr_id)?;
+                let tr = self.transitions.get_mut(&tr_id);
                 let to = get_token!(self, to_id)?;
+                let old_pl = get_place!(self, to.last_place)?;
                 modified.insert(to.last_place);
                 assert_state!(
                     to.position == TokenPosition::Transition(tr_id),
@@ -140,21 +136,29 @@ impl PetriNet {
                         to_id.0, to.position, tr_id.0
                     )
                 )?;
+                assert_state!(
+                    old_pl.taken_token_ids.remove(&to_id).is_some(),
+                    format!("Token '{}' not taken from place '{}'.", to_id.0, to.last_place.0)
+                )?;
                 to.position = TokenPosition::Place(pl_id);
                 to.last_place = pl_id;
+                let pl = get_place!(self, pl_id)?;
                 assert_state!(
                     pl.token_ids.insert(to_id),
                     format!("Token '{}' already at place '{}'.", to_id.0, pl_id.0)
                 )?;
-                assert_state!(
-                    tr.token_ids.remove(&to_id),
-                    format!("Token '{}' not found at transition '{}'.", to_id.0, tr_id.0)
-                )?;
+                if let Some(tr) = tr {
+                    assert_state!(
+                        tr.token_ids.remove(&to_id),
+                        format!("Token '{}' not found at transition '{}'.", to_id.0, tr_id.0)
+                    )?;
+                }
                 modified.insert(pl_id);
             }
             NetChange::Delete(pl_id, tr_id, to_id) => {
-                let tr = get_transition!(self, tr_id)?;
+                let tr = self.transitions.get_mut(&tr_id);
                 let to = get_token!(self, to_id)?;
+                let old_pl = get_place!(self, to.last_place)?;
                 assert_state!(
                     to.position == TokenPosition::Transition(tr_id),
                     format!(
@@ -170,9 +174,15 @@ impl PetriNet {
                     )
                 )?;
                 assert_state!(
-                    tr.token_ids.remove(&to_id),
-                    format!("Token '{}' not found at transition '{}'.", to_id.0, tr_id.0)
+                    old_pl.taken_token_ids.remove(&to_id).is_some(),
+                    format!("Token '{}' not taken from place '{}'.", to_id.0, to.last_place.0)
                 )?;
+                if let Some(tr) = tr {
+                    assert_state!(
+                        tr.token_ids.remove(&to_id),
+                        format!("Token '{}' not found at transition '{}'.", to_id.0, tr_id.0)
+                    )?;
+                }
                 self.tokens.remove(&to_id);
                 modified.insert(pl_id);
             }
@@ -212,18 +222,22 @@ impl PetriNet {
                             )?;
                         }
                         TokenPosition::Transition(old_tr_id) => {
-                            let old_tr = get_transition!(self, old_tr_id)?;
-                            assert_state!(
-                                old_tr.token_ids.remove(&to_id),
-                                format!(
-                                    "Token '{}' not found at transition '{}'.",
-                                    to_id.0, old_tr_id.0
-                                )
-                            )?;
+                            let old_tr = self.transitions.get_mut(&old_tr_id);
+                            if let Some(old_tr) = old_tr {
+                                assert_state!(
+                                    old_tr.token_ids.remove(&to_id),
+                                    format!(
+                                        "Token '{}' not found at transition '{}'.",
+                                        to_id.0, old_tr_id.0
+                                    )
+                                )?;
+                            }
                         }
                     }
                     to.position = TokenPosition::Place(pl_id);
                 }
+                let old_pl = get_place!(self, to.last_place)?;
+                old_pl.taken_token_ids.remove(&to_id);
                 modified.insert(to.last_place);
                 modified.insert(pl_id);
                 to.last_place = pl_id;
@@ -239,6 +253,8 @@ impl PetriNet {
                         to_id.0, to.last_place.0, pl_id.0
                     )
                 )?;
+                let old_pl = get_place!(self, to.last_place)?;
+                old_pl.taken_token_ids.remove(&to_id);
                 match to.position.clone() {
                     TokenPosition::Place(cur_pl_id) => {
                         assert_state!(
@@ -255,14 +271,16 @@ impl PetriNet {
                         )?;
                     }
                     TokenPosition::Transition(cur_tr_id) => {
-                        let cur_tr = get_transition!(self, cur_tr_id)?;
-                        assert_state!(
-                            cur_tr.token_ids.remove(&to_id),
-                            format!(
-                                "Token '{}' not found at transition '{}'.",
-                                to_id.0, cur_tr_id.0
-                            )
-                        )?;
+                        let cur_tr = self.transitions.get_mut(&cur_tr_id);
+                        if let Some(cur_tr) = cur_tr {
+                            assert_state!(
+                                cur_tr.token_ids.remove(&to_id),
+                                format!(
+                                    "Token '{}' not found at transition '{}'.",
+                                    to_id.0, cur_tr_id.0
+                                )
+                            )?;
+                        }
                     }
                 }
                 self.tokens.remove(&to_id);

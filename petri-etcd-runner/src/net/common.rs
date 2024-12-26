@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Eq, PartialEq, Clone, Copy, PartialOrd, Ord, Hash, Debug)]
 pub struct PlaceId(pub u64);
@@ -11,12 +11,16 @@ pub struct TokenId(pub u64);
 pub struct Place {
     name: String,
     pub(super) token_ids: HashSet<TokenId>,
-    // pub(super) taken_token_ids: HashMap<TokenId, Transition>,
+    pub(super) taken_token_ids: HashMap<TokenId, TransitionId>,
 }
 
 impl Place {
     pub fn new<S: AsRef<str>>(name: S) -> Self {
-        Place { name: name.as_ref().to_string(), token_ids: Default::default() }
+        Place {
+            name: name.as_ref().to_string(),
+            token_ids: Default::default(),
+            taken_token_ids: Default::default(),
+        }
     }
 
     pub fn name(&self) -> &str {
