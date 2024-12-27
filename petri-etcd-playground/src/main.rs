@@ -1,4 +1,10 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant},
+};
 
 use etcd_client::{
     Client, ElectionClient, Error, EventType, LeaseClient, LeaseGrantOptions, WatchClient,
@@ -241,6 +247,8 @@ struct SimpleTrans {
     delete: bool,
 }
 
+static EXECUTION_COUNT: AtomicUsize = AtomicUsize::new(0);
+
 impl TransitionExecutor for SimpleTrans {
     fn validate(ctx: &impl petri_etcd_runner::transition::ValidateContext) -> ValidationResult
     where
@@ -285,8 +293,9 @@ impl TransitionExecutor for SimpleTrans {
     }
 
     async fn run(&mut self, ctx: &mut impl petri_etcd_runner::transition::RunContext) -> RunResult {
+        EXECUTION_COUNT.fetch_add(1, Ordering::Relaxed);
         info!("Running transition {}", self.tr_id.0);
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        // tokio::time::sleep(Duration::from_secs(1)).await;
         let mut result = RunResult::build();
         if !self.delete {
             for to in ctx.tokens() {
@@ -341,15 +350,18 @@ impl TransitionExecutor for InitializeTrans {
             .iter()
             .map(|&pl_id| ctx.tokens_at(pl_id).count() + ctx.taken_tokens_at(pl_id).count())
             .sum();
-        if num_existing > 3 {
+        if num_existing > 0 {
             return result.disabled(None, None);
         }
         result.enabled()
     }
 
-    async fn run(&mut self, ctx: &mut impl petri_etcd_runner::transition::RunContext) -> RunResult {
+    async fn run(
+        &mut self,
+        _ctx: &mut impl petri_etcd_runner::transition::RunContext,
+    ) -> RunResult {
         info!("Running transition {}", self.tr_id.0);
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        // tokio::time::sleep(Duration::from_secs(1)).await;
         let mut result = RunResult::build();
         result.place_new(self.pl_out, "newly created".into());
         result.result()
@@ -377,37 +389,43 @@ async fn playground2() -> PetriResult<()> {
     let mut executors1 = ExecutorRegistry::new();
     let mut executors2 = ExecutorRegistry::new();
 
-    net.insert_place(Place::new("pl1"))?;
-    net.insert_place(Place::new("pl2"))?;
-    net.insert_transition(Transition::new("tr1", "test-region-1"))?;
-    net.insert_transition(Transition::new("tr2", "test-region-2"))?;
-    net.insert_arc(net::Arc::new("pl1", "tr1", ArcVariant::In, "".into()))?;
-    net.insert_arc(net::Arc::new("pl2", "tr1", ArcVariant::Out, "".into()))?;
-    net.insert_arc(net::Arc::new("pl2", "tr2", ArcVariant::In, "".into()))?;
-    net.insert_arc(net::Arc::new("pl1", "tr2", ArcVariant::Out, "".into()))?;
-    net.insert_transition(Transition::new("tr-init", "test-region-1"))?;
-    net.insert_arc(net::Arc::new("pl1", "tr-init", ArcVariant::OutCond, "".into()))?;
-    net.insert_arc(net::Arc::new("pl2", "tr-init", ArcVariant::Cond, "".into()))?;
-    executors1.register::<SimpleTrans>("tr1");
-    executors2.register::<SimpleTrans>("tr2");
-    executors1.register::<InitializeTrans>("tr-init");
+    // net.insert_place(Place::new("pl1"))?;
+    // net.insert_place(Place::new("pl2"))?;
+    // net.insert_transition(Transition::new("tr1", "test-region-1"))?;
+    // net.insert_transition(Transition::new("tr2", "test-region-1"))?;
+    // net.insert_arc(net::Arc::new("pl1", "tr1", ArcVariant::In, "".into()))?;
+    // net.insert_arc(net::Arc::new("pl2", "tr1", ArcVariant::Out, "".into()))?;
+    // net.insert_arc(net::Arc::new("pl2", "tr2", ArcVariant::In, "".into()))?;
+    // net.insert_arc(net::Arc::new("pl1", "tr2", ArcVariant::Out, "".into()))?;
+    // net.insert_transition(Transition::new("tr-init", "test-region-1"))?;
+    // net.insert_arc(net::Arc::new("pl1", "tr-init", ArcVariant::OutCond, "".into()))?;
+    // net.insert_arc(net::Arc::new("pl2", "tr-init", ArcVariant::Cond, "".into()))?;
+    // executors1.register::<SimpleTrans>("tr1");
+    // executors1.register::<SimpleTrans>("tr2");
+    // executors2.register::<SimpleTrans>("tr2");
+    // executors1.register::<InitializeTrans>("tr-init");
 
-    // for i in 1..10 {
-    //     let pl1 = format!("pl{i}-1");
-    //     let pl2 = format!("pl{i}-2");
-    //     let tr1 = format!("tr{i}-1");
-    //     let tr2 = format!("tr{i}-2");
-    //     net.insert_place(Place::new(&pl1))?;
-    //     net.insert_place(Place::new(&pl2))?;
-    //     net.insert_transition(Transition::new(&tr1, "test-region"))?;
-    //     net.insert_transition(Transition::new(&tr2, "test-region"))?;
-    //     net.insert_arc(net::Arc::new(&pl1, &tr1, ArcVariant::In, "".into()))?;
-    //     net.insert_arc(net::Arc::new(&pl2, &tr1, ArcVariant::Out, "".into()))?;
-    //     net.insert_arc(net::Arc::new(&pl2, &tr2, ArcVariant::In, "".into()))?;
-    //     net.insert_arc(net::Arc::new(&pl1, &tr2, ArcVariant::Out, "".into()))?;
-    //     executors.register::<SimpleTrans>(&tr1);
-    //     executors.register::<SimpleTrans>(&tr2);
-    // }
+    for i in 1..33 {
+        let pl1 = format!("pl{i}-1");
+        let pl2 = format!("pl{i}-2");
+        let tr1 = format!("tr{i}-1");
+        let tr2 = format!("tr{i}-2");
+        let tr_init = format!("tr{i}-init");
+        net.insert_place(Place::new(&pl1))?;
+        net.insert_place(Place::new(&pl2))?;
+        net.insert_transition(Transition::new(&tr1, "test-region-1"))?;
+        net.insert_transition(Transition::new(&tr2, "test-region-1"))?;
+        net.insert_arc(net::Arc::new(&pl1, &tr1, ArcVariant::In, "".into()))?;
+        net.insert_arc(net::Arc::new(&pl2, &tr1, ArcVariant::Out, "".into()))?;
+        net.insert_arc(net::Arc::new(&pl2, &tr2, ArcVariant::In, "".into()))?;
+        net.insert_arc(net::Arc::new(&pl1, &tr2, ArcVariant::Out, "".into()))?;
+        net.insert_transition(Transition::new(&tr_init, "test-region-1"))?;
+        net.insert_arc(net::Arc::new(&pl1, &tr_init, ArcVariant::OutCond, "".into()))?;
+        net.insert_arc(net::Arc::new(&pl2, &tr_init, ArcVariant::Cond, "".into()))?;
+        executors1.register::<SimpleTrans>(&tr1);
+        executors1.register::<SimpleTrans>(&tr2);
+        executors1.register::<InitializeTrans>(&tr_init);
+    }
     let net = Arc::new(net);
     let config = ETCDConfigBuilder::default()
         .endpoints(["localhost:2379"])
@@ -420,17 +438,18 @@ async fn playground2() -> PetriResult<()> {
     let run1 =
         petri_etcd_runner::runner::run(Arc::clone(&net), etcd, executors1, shutdown_token.clone());
 
-    let config = ETCDConfigBuilder::default()
-        .endpoints(["localhost:2379"])
-        .prefix("/petri-test/")
-        .node_name("node2")
-        .region("test-region-2")
-        .build()?;
+    // let config = ETCDConfigBuilder::default()
+    //     .endpoints(["localhost:2379"])
+    //     .prefix("/petri-test/")
+    //     .node_name("node2")
+    //     .region("test-region-2")
+    //     .build()?;
 
-    let etcd = ETCDGate::new(config);
-    let run2 =
-        petri_etcd_runner::runner::run(Arc::clone(&net), etcd, executors2, shutdown_token.clone());
+    // let etcd = ETCDGate::new(config);
+    // let run2 =
+    //     petri_etcd_runner::runner::run(Arc::clone(&net), etcd, executors2, shutdown_token.clone());
 
+    let start = Instant::now();
     let mut join_set = JoinSet::new();
 
     join_set.spawn(async {
@@ -444,18 +463,27 @@ async fn playground2() -> PetriResult<()> {
         }
     });
 
-    join_set.spawn(async {
-        match run2.await {
-            Ok(_) => {
-                info!("Run2 finished")
-            }
-            Err(err) => {
-                error!("Run2 finished with: {}", err)
-            }
-        }
-    });
+    // join_set.spawn(async {
+    //     match run2.await {
+    //         Ok(_) => {
+    //             info!("Run2 finished")
+    //         }
+    //         Err(err) => {
+    //             error!("Run2 finished with: {}", err)
+    //         }
+    //     }
+    // });
 
     join_set.join_all().await;
+    let end = Instant::now();
+    let d = end - start;
+    let num_exec = EXECUTION_COUNT.load(Ordering::SeqCst);
+    warn!(
+        "Time: {}, executions: {} => {} transitions/s",
+        d.as_secs_f64(),
+        num_exec,
+        num_exec as f64 / d.as_secs_f64()
+    );
     info!("Bye.");
     Ok(())
 }
@@ -468,7 +496,7 @@ async fn main() -> PetriResult<()> {
                 | tracing_subscriber::fmt::format::FmtSpan::NEW,
         )
         .compact()
-        .with_env_filter(EnvFilter::try_new("info,petri_etcd_runner=debug").unwrap())
+        .with_env_filter(EnvFilter::try_new("warn,petri_etcd_runner=warn").unwrap())
         .init();
 
     return playground2().await;
