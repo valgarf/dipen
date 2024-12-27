@@ -30,6 +30,10 @@ impl Place {
     pub fn token_ids(&self) -> &HashSet<TokenId> {
         &self.token_ids
     }
+
+    pub fn taken_token_ids(&self) -> &HashMap<TokenId, TransitionId> {
+        &self.taken_token_ids
+    }
 }
 
 #[derive(Clone)]

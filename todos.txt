@@ -1,4 +1,3 @@
-- remember / update tokens original place
 - create/destroy tokens with transitions
 - cancel running transitions on start
 - statistics (transitions / s, how often each was fired?)

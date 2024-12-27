@@ -95,10 +95,22 @@ pub trait StartTokenContext {
     fn data(&self) -> &[u8];
 }
 
+pub trait StartTakenTokenContext {
+    fn token_id(&self) -> TokenId;
+
+    fn transition_id(&self) -> TransitionId;
+
+    fn place_id(&self) -> PlaceId;
+
+    fn data(&self) -> &[u8];
+}
+
 pub trait StartContext {
-    /// Get tokens at the given place. Always returns the current state, any modifications
-    /// planned with this context are not reflected in the tokens or their position.
     fn tokens_at(&self, place_id: PlaceId) -> impl Iterator<Item = impl StartTokenContext>;
+    fn taken_tokens_at(
+        &self,
+        place_id: PlaceId,
+    ) -> impl Iterator<Item = impl StartTakenTokenContext>;
 }
 
 pub trait RunTokenContext {
