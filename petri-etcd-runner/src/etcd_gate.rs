@@ -9,8 +9,8 @@ use std::{
 
 use derive_builder::Builder;
 use etcd_client::{
-    DeleteOptions, EventType, GetOptions, KvClient, LeaseGrantOptions, PutOptions, Txn, TxnOp,
-    WatchClient, WatchOptions,
+    Compare, CompareOp, DeleteOptions, EventType, GetOptions, KvClient, LeaseGrantOptions,
+    PutOptions, Txn, TxnOp, WatchClient, WatchOptions,
 };
 use tokio::{join, select, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
@@ -30,6 +30,7 @@ pub struct ETCDGate {
     lease: Option<i64>,
     keep_alive_join_handle: Option<JoinHandle<()>>,
     watching_join_handle: Option<JoinHandle<()>>,
+    lock_requests_handle: Option<JoinHandle<()>>,
     place_locks: HashMap<PlaceId, Arc<PlaceLock>>,
 }
 
@@ -108,16 +109,16 @@ macro_rules! check_place_match {
 }
 
 macro_rules! cancelable_send {
-    ($tx: expr, $event:expr, $cancel_token:expr) => {
+    ($tx: expr, $event:expr, $cancel_token:expr, $rec_name:expr) => {
         if ($tx.send($event).await).is_err() {
             let cancel_token = $cancel_token;
             if !cancel_token.is_cancelled() {
-                warn!("Net event change receiver has been dropped.");
+                let msg = concat!($rec_name, " has been dropped.");
+                warn!(msg);
                 cancel_token.cancel();
             } else {
-                debug!(
-                    "Net event change receiver has been dropped, probably due to a cancellation."
-                );
+                let msg = concat!($rec_name, " has been dropped, probably due to a cancellation.");
+                debug!(msg);
             }
             Err(PetriError::Cancelled())
         } else {
@@ -151,6 +152,7 @@ impl ETCDGate {
             lease: None,
             keep_alive_join_handle: None,
             watching_join_handle: None,
+            lock_requests_handle: None,
             place_locks: Default::default(),
         }
     }
@@ -193,9 +195,13 @@ impl ETCDGate {
         if let Some(join_handle) = self.watching_join_handle.as_mut() {
             let _ = join!(join_handle); // we ignore any errors from inside that handle
         }
+        if let Some(join_handle) = self.lock_requests_handle.as_mut() {
+            let _ = join!(join_handle); // we ignore any errors from inside that handle
+        }
         self.cancel_token = None;
         self.keep_alive_join_handle = None;
         self.watching_join_handle = None;
+        self.lock_requests_handle = None;
         self.client = None;
         self.lease = None;
     }
@@ -280,31 +286,51 @@ impl ETCDGate {
         Ok(result)
     }
 
-    #[tracing::instrument(level = "info", skip(tx, place_ids, _transition_ids))]
+    #[tracing::instrument(level = "info", skip(tx_events, place_ids, _transition_ids))]
     pub async fn load_data(
         &mut self,
-        tx: tokio::sync::mpsc::Sender<NetChangeEvent>,
+        tx_events: tokio::sync::mpsc::Sender<NetChangeEvent>,
         place_ids: HashSet<PlaceId>,
         _transition_ids: HashSet<TransitionId>,
     ) -> Result<()> {
-        let revision = self._create_initial_events(&tx, &place_ids).await?;
+        let revision = self._create_initial_events(&tx_events, &place_ids).await?;
         let prefix = self.config.prefix.clone();
         let watch_client = self._client_mut()?.watch_client();
+        let cancel_token = self._cancel_token()?.clone();
+        let lease = self._lease()?;
+        let (tx_locks, rx_locks) = tokio::sync::mpsc::channel(128);
+        let mut place_locks = HashMap::<PlaceId, Arc<PlaceLock>>::new();
+        for &pl_id in &place_ids {
+            place_locks.insert(pl_id, self.place_lock(pl_id)?);
+        }
+        self.lock_requests_handle = Some(tokio::spawn(async move {
+            let fut = ETCDGate::_lock_requests(place_locks, rx_locks);
+            select! {
+                res = fut =>{ match res {
+                    Err(PetriError::Cancelled()) => {}
+                    Err(err) => {error!("Handling lock requests failed with: {}.", err); cancel_token.cancel();}
+                    _ => {}
+                }}
+                _ = cancel_token.cancelled() => {}
+            }
+        }));
         let cancel_token = self._cancel_token()?.clone();
         self.watching_join_handle = Some(tokio::spawn(async move {
             let watcher_fut = ETCDGate::_watch_events(
                 prefix,
                 revision,
                 watch_client,
-                tx,
+                tx_events,
+                tx_locks,
                 place_ids,
                 cancel_token.clone(),
+                lease,
             );
             tokio::pin!(watcher_fut);
             select! {
                 res = watcher_fut =>{ match res {
                     Err(PetriError::Cancelled()) => {}
-                    Err(err) => {error!("Watching etcd for changes failed with {}.", err); cancel_token.cancel();}
+                    Err(err) => {error!("Watching etcd for changes failed with: {}.", err); cancel_token.cancel();}
                     _ => {}
                 }}
                 _ = cancel_token.cancelled() => {}
@@ -358,23 +384,52 @@ impl ETCDGate {
             })
             .collect();
 
-        let evts = ETCDGate::_analyze_place_events(self.config.prefix.clone(), &events, place_ids)?;
+        let (evts, _external_lock_requests) = ETCDGate::_analyze_place_events(
+            self.config.prefix.clone(),
+            &events,
+            place_ids,
+            self._lease()?,
+        )?;
+        // Note: we can ignore external lock requests here. They are only used to release locks on
+        // our side, but we have not acquired any locks at this point.
         let cancel_token = self._cancel_token()?;
-        cancelable_send!(tx, initial_event, cancel_token)?;
+        cancelable_send!(tx, initial_event, cancel_token, "Net event change receiver")?;
         for evt in evts {
-            cancelable_send!(tx, evt, cancel_token)?;
+            cancelable_send!(tx, evt, cancel_token, "Net event change receiver")?;
         }
 
         Ok(revision)
     }
 
+    async fn _lock_requests(
+        place_locks: HashMap<PlaceId, Arc<PlaceLock>>,
+        mut rx_locks: tokio::sync::mpsc::Receiver<HashSet<PlaceId>>,
+    ) -> Result<()> {
+        while let Some(msg) = rx_locks.recv().await {
+            let mut place_ids: Vec<PlaceId> = msg.iter().copied().collect();
+            place_ids.sort();
+            for pl_id in place_ids {
+                let pl_lock = place_locks.get(&pl_id).ok_or(PetriError::ValueError(format!(
+                    "no place lock for place id {}",
+                    pl_id.0
+                )))?;
+                pl_lock.external_acquire().await?;
+            }
+            //
+        }
+        Err(PetriError::Cancelled())
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn _watch_events(
         prefix: String,
         revision: i64,
         mut watch_client: WatchClient,
-        tx: tokio::sync::mpsc::Sender<NetChangeEvent>,
+        tx_events: tokio::sync::mpsc::Sender<NetChangeEvent>,
+        tx_locks: tokio::sync::mpsc::Sender<HashSet<PlaceId>>,
         place_ids: HashSet<PlaceId>,
         cancel_token: CancellationToken,
+        lease: i64,
     ) -> Result<()> {
         let watch = watch_client.watch(
             prefix.clone() + "pl/",
@@ -398,9 +453,23 @@ impl ETCDGate {
                 })
                 .collect();
 
-            let evts = ETCDGate::_analyze_place_events(prefix.clone(), &events, &place_ids)?;
+            let (evts, lock_requests) =
+                ETCDGate::_analyze_place_events(prefix.clone(), &events, &place_ids, lease)?;
             for evt in evts {
-                cancelable_send!(tx, evt, cancel_token.clone())?;
+                cancelable_send!(
+                    tx_events,
+                    evt,
+                    cancel_token.clone(),
+                    "Net event change receiver"
+                )?;
+            }
+            if !lock_requests.is_empty() {
+                cancelable_send!(
+                    tx_locks,
+                    lock_requests,
+                    cancel_token.clone(),
+                    "Lock request receiver"
+                )?;
             }
         }
         Ok(())
@@ -410,16 +479,18 @@ impl ETCDGate {
         prefix: String,
         events: &[ETCDEvent],
         place_ids: &HashSet<PlaceId>,
-    ) -> Result<Vec<NetChangeEvent>> {
+        lease: i64,
+    ) -> Result<(Vec<NetChangeEvent>, HashSet<PlaceId>)> {
         // <prefix>/pl/<place-id>/<token-id> -> value is the token data, place id provides the position
         // <prefix>/pl/<place-id>/<token-id>/<transition-id> -> value is the token data, token has been taken by the given transition (leased, will be undone if cancelled)
 
-        let mut result = Vec::new();
+        let mut change_events = Vec::new();
         let mut destroyed = HashMap::<TokenId, (PlaceId, Vec<u8>)>::new();
         let mut created = HashMap::<TokenId, (PlaceId, Vec<u8>)>::new();
         let mut updated = HashMap::<TokenId, (PlaceId, Vec<u8>)>::new();
         let mut taken = HashMap::<TokenId, (PlaceId, TransitionId)>::new();
         let mut released = HashMap::<TokenId, (PlaceId, TransitionId)>::new();
+        let mut external_lock_requests = HashSet::<PlaceId>::new();
         for chunk in events.chunk_by(|e1, e2| e1.revision == e2.revision) {
             // a single revision
 
@@ -447,7 +518,14 @@ impl ETCDGate {
                     continue;
                 }
                 if split[2] == "lock" && split.len() == 4 {
-                    if evt.event_type == EventType::Put {}
+                    if evt.event_type == EventType::Put {
+                        if let Ok(lease_for_lock) = i64::from_str_radix(split[3], 16) {
+                            if lease_for_lock != lease {
+                                external_lock_requests.insert(place_id);
+                                // lock requested by someone else on a place used by us
+                            }
+                        }
+                    }
                 } else {
                     let token_id = match split[2].parse() {
                         Ok(v) => TokenId(v),
@@ -618,10 +696,10 @@ impl ETCDGate {
                 change_evt.changes.push(NetChange::ExternalUpdate(token_id, data));
             }
 
-            result.push(change_evt);
+            change_events.push(change_evt);
         }
 
-        Ok(result)
+        Ok((change_events, external_lock_requests))
     }
 
     fn _split_key<'a>(prefix: &str, key: &'a [u8]) -> Result<Vec<&'a str>> {
@@ -757,7 +835,7 @@ impl ETCDGate {
         debug!("Waiting {:#?} before revoking lease.", wait_time);
         tokio::time::sleep(lease_ttl / 10).await;
         if let Err(err) = lease_client.revoke(lease_id).await {
-            warn!("Revoking lease failed with {}.", err);
+            warn!("Revoking lease failed with: {}.", err);
         } else {
             debug!("Lease revoked.");
         }
@@ -808,19 +886,27 @@ impl ETCDTransitionGate {
     pub async fn start_transition(
         &mut self,
         take: impl IntoIterator<Item = (TokenId, PlaceId)>,
+        fencing_tokens: &Vec<&Vec<u8>>,
     ) -> Result<u64> {
         // TODO: check locks
-        let txn = Txn::new().and_then(
-            take.into_iter()
-                .map(|(to_id, pl_id)| {
-                    TxnOp::put(
-                        _token_taken_path(&self.prefix, pl_id, to_id, self.transition_id),
-                        "",
-                        Some(PutOptions::new().with_lease(self.lease)),
-                    )
-                })
-                .collect::<Vec<_>>(),
-        );
+        let txn = Txn::new()
+            .when(
+                fencing_tokens
+                    .iter()
+                    .map(|&fto| Compare::lease(fto.clone(), CompareOp::Equal, self.lease))
+                    .collect::<Vec<Compare>>(),
+            )
+            .and_then(
+                take.into_iter()
+                    .map(|(to_id, pl_id)| {
+                        TxnOp::put(
+                            _token_taken_path(&self.prefix, pl_id, to_id, self.transition_id),
+                            "",
+                            Some(PutOptions::new().with_lease(self.lease)),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            );
         let res = self.client.txn(txn).await?;
         if res.succeeded() {
             Ok(res
@@ -838,8 +924,13 @@ impl ETCDTransitionGate {
     pub async fn end_transition(
         &mut self,
         place: impl IntoIterator<Item = (TokenId, PlaceId, PlaceId, Vec<u8>)>,
+        fencing_tokens: &Vec<&Vec<u8>>,
     ) -> Result<u64> {
-        // TODO: check locks + token is still at place + token is taken by this transition
+        // check if token is still at place? Should not happen if locks work correctly
+        let cond = fencing_tokens
+            .iter()
+            .map(|&fto| Compare::lease(fto.clone(), CompareOp::Equal, self.lease))
+            .collect::<Vec<Compare>>();
         let ops = place
             .into_iter()
             .flat_map(|(to_id, orig_pl_id, new_pl_id, data)| {
@@ -858,7 +949,8 @@ impl ETCDTransitionGate {
                 [delete_op, put_op]
             })
             .collect::<Vec<_>>();
-        let txn = Txn::new().and_then(ops);
+
+        let txn = Txn::new().when(cond).and_then(ops);
         let resp = self.client.txn(txn).await?;
         let header =
             resp.header().ok_or(PetriError::Other("header missing from etcd reply.".into()))?;

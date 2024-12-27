@@ -33,7 +33,7 @@ impl ExecutorRegistry {
     }
 }
 
-#[tracing::instrument(level = "info", skip_all, fields(region=etcd.config.region))]
+#[tracing::instrument(level = "info", skip_all, fields(region=etcd.config.region, node=etcd.config.node_name))]
 pub async fn run(
     net_builder: Arc<PetriNetBuilder>,
     mut etcd: ETCDGate,
@@ -45,6 +45,8 @@ pub async fn run(
             "Method 'run' requires a region to be set.".to_string(),
         ));
     }
+    let region_name = etcd.config.region.clone();
+    let node_name = etcd.config.node_name.clone();
     // validate assignement (all transitions have a runner assigned and its validate function
     // succeeds): We don't want to connect to etcd if we have an inconsistent net to begin with.
     let net_builder = net_builder.only_region(&etcd.config.region)?;
@@ -114,15 +116,20 @@ pub async fn run(
         let net_read_guard = net_lock.read().await;
         let mut transition_tasks = JoinSet::<()>::new();
         for transition_id in transition_ids {
-            let place_rx = receivers.remove(&transition_id).unwrap();
-            let place_locks = place_locks_tr.remove(&transition_id).unwrap();
-            let net_lock = Arc::clone(&net_lock);
-            let cancel_token = cancel_token.clone();
-            let etcd_gate = etcd.create_transition_gate(transition_id)?;
             let tr_name = net_read_guard.transitions().get(&transition_id).unwrap().name();
-            let exec = executors.dispatcher.get(tr_name).unwrap().clone_empty();
-            let rx_revision = rx_revision.clone();
-            let runner = TransitionRunner {cancel_token, net_lock, etcd_gate, transition_id, place_rx, exec, rx_revision, place_locks};
+            let runner = TransitionRunner {
+                cancel_token: cancel_token.clone(), 
+                net_lock:Arc::clone(&net_lock), 
+                etcd_gate: etcd.create_transition_gate(transition_id)?, 
+                transition_id,
+                place_rx: receivers.remove(&transition_id).unwrap(),
+                exec: executors.dispatcher.get(tr_name).unwrap().clone_empty(), 
+                rx_revision: rx_revision.clone(), 
+                place_locks: place_locks_tr.remove(&transition_id).unwrap(), 
+                region_name: region_name.clone(),
+                node_name: node_name.clone(),
+                transition_name: tr_name.into(),
+            };
             transition_tasks.spawn(runner.run_transition()); 
         }
 

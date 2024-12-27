@@ -15,7 +15,7 @@ use petri_etcd_runner::{
     },
     ETCDConfigBuilder, ETCDGate,
 };
-use tokio::{join, pin, select, signal, task::JoinSet, time::sleep};
+use tokio::{select, signal, task::JoinSet, time::sleep};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{self, EnvFilter};
@@ -158,7 +158,7 @@ async fn playground() -> PetriResult<()> {
     let resp = match lease_client.grant(10, Some(LeaseGrantOptions::new().with_id(123))).await {
         Ok(resp) => resp,
         Err(err) => {
-            warn!("Shutting down. Granting a lease failed with {}.", err);
+            warn!("Shutting down. Granting a lease failed with: {}.", err);
             return Ok(());
         }
     };
@@ -175,7 +175,7 @@ async fn playground() -> PetriResult<()> {
 
     tokio::spawn(async move {
         if let Err(err) = keep_alive(&mut lease_client, lease_id, lease_ttl).await {
-            warn!("Shutting down. Keep alive failed with {}.", err)
+            warn!("Shutting down. Keep alive failed with: {}.", err)
         } else {
             warn!("Shutting down. Keep alive finished unexpectedly.")
         }
@@ -198,7 +198,7 @@ async fn playground() -> PetriResult<()> {
     select! {
         res = campaign(&mut election_client, lease_id) => {
             if let Err(err) = res {
-                warn!("Shutting down. Election failed with {}.", err);
+                warn!("Shutting down. Election failed with: {}.", err);
                 shutdown_token.cancel();
             }
         }
@@ -210,7 +210,7 @@ async fn playground() -> PetriResult<()> {
         select! {
             res = watch_all(&mut watch_client, lease_id) => {
                 if let Err(err) = res {
-                    warn!("Shutting down. Watching failed with {}.", err);
+                    warn!("Shutting down. Watching failed with: {}.", err);
                     shutdown_token.cancel();
                 }
             }
@@ -225,7 +225,7 @@ async fn playground() -> PetriResult<()> {
     // ignore any errors on revoke. If we cannot reach the server, we shut down. The lease will be
     // released automatically after its TTL
     if let Err(err) = client.lease_client().revoke(lease_id).await {
-        warn!("Revoking lease failed with {}.", err);
+        warn!("Revoking lease failed with: {}.", err);
     } else {
         debug!("Lease revoked.");
     }

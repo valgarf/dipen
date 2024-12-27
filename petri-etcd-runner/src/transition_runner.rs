@@ -27,6 +27,10 @@ pub(crate) struct TransitionRunner {
     pub exec: Box<dyn TransitionExecutorDispatch>,
     pub rx_revision: tokio::sync::watch::Receiver<u64>,
     pub place_locks: HashMap<net::PlaceId, Arc<PlaceLock>>,
+    // used for logging and other messages
+    pub region_name: String,
+    pub node_name: String,
+    pub transition_name: String,
 }
 
 // # context implementations
@@ -263,7 +267,7 @@ impl<T: TransitionExecutor + Send + Sync + 'static> TransitionExecutorDispatch
 // runner implementation
 
 impl TransitionRunner {
-    #[tracing::instrument(level = "debug", skip(self), fields(transition_id=self.transition_id.0))]
+    #[tracing::instrument(level = "debug", skip(self), fields(transition=format!("{} ({})", self.transition_name, self.transition_id.0), region=self.region_name, node=self.node_name))]
     pub async fn run_transition(mut self) {
         let net = self.net_lock.read().await;
         let ctx = CreateContextStruct {
@@ -353,6 +357,7 @@ impl TransitionRunner {
                 };
             }
             let min_revision = guards.iter().map(|g| g.min_revision).max().unwrap_or(0);
+            let fencing_tokens: Vec<&Vec<u8>> = guards.iter().map(|g| &g.fencing_token).collect();
             select! {
                 _ = self.rx_revision.wait_for(move |&rev| {rev>=min_revision}) => {},
                 _ = self.cancel_token.cancelled()  => {return;}
@@ -365,23 +370,22 @@ impl TransitionRunner {
                 CheckStartChoice::Disabled(data) => {
                     wait_for = data.wait_for;
                     auto_recheck = data.auto_recheck;
-                    // TODO: handle auto recheck
                     continue;
                 }
                 CheckStartChoice::Enabled(data) => data.take,
             };
             trace!("Running transition.");
-            // TODO: provide fencing tokens
-            let new_revision = match self.etcd_gate.start_transition(take_tokens.clone()).await {
-                Ok(new_revision) => new_revision,
-                Err(err) => {
-                    error!(
-                        "Start transition '{}' via etcd failed with error: {}",
-                        self.transition_id.0, err
-                    );
-                    return;
-                }
-            };
+            let new_revision =
+                match self.etcd_gate.start_transition(take_tokens.clone(), &fencing_tokens).await {
+                    Ok(new_revision) => new_revision,
+                    Err(err) => {
+                        error!(
+                            "Start transition '{}' via etcd failed with error: {}",
+                            self.transition_id.0, err
+                        );
+                        return;
+                    }
+                };
             for g in &mut guards {
                 g.min_revision = new_revision;
             }
@@ -427,13 +431,14 @@ impl TransitionRunner {
                 };
             }
             let min_revision = guards.iter().map(|g| g.min_revision).max().unwrap_or(0);
+            let fencing_tokens: Vec<&Vec<u8>> = guards.iter().map(|g| &g.fencing_token).collect();
             select! {
                 _ = self.rx_revision.wait_for(move |&rev| {rev>=min_revision}) => {},
                 _ = self.cancel_token.cancelled()  => {return;}
             }
 
             // TODO: use fencing tokens to ensure we still have the locks
-            let revision = match self.etcd_gate.end_transition(res.place).await {
+            let revision = match self.etcd_gate.end_transition(res.place, &fencing_tokens).await {
                 Ok(revision) => revision,
                 Err(err) => {
                     error!("End transition failed with error: {}", err);

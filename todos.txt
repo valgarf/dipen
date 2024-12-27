@@ -1,5 +1,3 @@
-- fix update for partial nets!
-- locking
 - remember / update tokens original place
 - create/destroy tokens with transitions
 - cancel running transitions on start
