@@ -47,7 +47,7 @@ impl Display for NetChange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             NetChange::Take(place_id, transition_id, token_id) => {
-                write!(f, "Take({}: {} -> {})", token_id.0, place_id.0, transition_id.0)
+                write!(f, "Take({}: {} <- {})", token_id.0, transition_id.0, place_id.0)
             }
             NetChange::Place(place_id, transition_id, token_id) => {
                 write!(f, "Place({}: {} -> {})", token_id.0, transition_id.0, place_id.0)

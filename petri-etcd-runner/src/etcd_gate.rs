@@ -266,14 +266,14 @@ impl ETCDGate {
             let mut result = PetriNetIds::default();
             for tr_name in builder.transitions().keys() {
                 let key = self.config.prefix.clone() + "transition_ids/" + tr_name;
-                let tr_id = self._get_or_assign_id(key).await?;
+                let tr_id = self._get_or_assign_id(key, "tr").await?;
                 result.transitions.insert(tr_name.clone(), TransitionId(tr_id as u64));
                 let key = self.config.prefix.clone() + "transition_ids/" + tr_name + "/region";
                 self._check_or_assign_region(key).await?;
             }
             for pl_name in builder.places().keys() {
                 let key = self.config.prefix.clone() + "place_ids/" + pl_name;
-                let pl_id = self._get_or_assign_id(key).await?;
+                let pl_id = self._get_or_assign_id(key, "pl").await?;
                 result.places.insert(pl_name.clone(), PlaceId(pl_id as u64));
             }
             Ok::<PetriNetIds, PetriError>(result)
@@ -707,12 +707,9 @@ impl ETCDGate {
         Ok(key.split('/').collect())
     }
 
-    async fn _get_next_id(&mut self) -> Result<i64> {
-        let counter_name = self.config.prefix.clone() + "id_generator";
-        let resp = self
-            ._client_mut()?
-            .put(counter_name, [], Some(PutOptions::new().with_prev_key()))
-            .await?;
+    async fn _get_next_id(kv: &mut KvClient, prefix: String, ktype: &str) -> Result<i64> {
+        let counter_name = prefix + "id_generator/" + ktype;
+        let resp = kv.put(counter_name, [], Some(PutOptions::new().with_prev_key())).await?;
         let version = match resp.prev_key() {
             Some(key) => key.version() + 1,
             None => 1,
@@ -720,35 +717,57 @@ impl ETCDGate {
         Ok(version)
     }
 
-    async fn _get_or_assign_id(&mut self, key: String) -> Result<i64> {
+    async fn _get_or_assign_id(&mut self, key: String, ktype: &str) -> Result<i64> {
         let mut kv = self._client_mut()?.kv_client();
-        let resp = kv.get(key.clone(), None).await?;
-        let id: i64 = if resp.kvs().is_empty() {
-            // safeguard with some kind of lock? unlikely to be a problem here
-            let id = self._get_next_id().await?;
-            kv.put(key.clone(), id.to_string(), None).await?;
-            debug!(key, id, "Assigned id.");
-            id
-        } else {
-            from_utf8(resp.kvs().first().unwrap().value())?.parse()?
-        };
-        Ok(id)
+        loop {
+            let resp = kv.get(key.clone(), None).await?;
+            let id: i64 = if resp.kvs().is_empty() {
+                // safeguard with some kind of lock? unlikely to be a problem here
+                let id = ETCDGate::_get_next_id(&mut kv, self.config.prefix.clone(), ktype).await?;
+                let txn = Txn::new()
+                    // when 'key' has not yet been created ...
+                    .when([Compare::create_revision(key.clone(), CompareOp::Less, 1)])
+                    // ... put 'id' into the key
+                    .and_then([TxnOp::put(key.clone(), id.to_string(), None)]);
+                let resp = kv.txn(txn).await?;
+                if !resp.succeeded() {
+                    debug!(key, id, "Parallel id assignment, retrying...");
+                    continue;
+                }
+                debug!(key, id, "Assigned id.");
+                id
+            } else {
+                from_utf8(resp.kvs().first().unwrap().value())?.parse()?
+            };
+            return Ok(id);
+        }
     }
 
     async fn _check_or_assign_region(&mut self, key: String) -> Result<()> {
         let mut kv = self._client_mut()?.kv_client();
-        let resp = kv.get(key.clone(), None).await?;
-        if resp.kvs().is_empty() {
-            // safeguard with some kind of lock? unlikely to be a problem here
-            kv.put(key.clone(), self.config.region.clone(), None).await?;
-            debug!(key, "Assigned region.");
-        } else {
-            let region = from_utf8(resp.kvs().first().unwrap().value())?;
-            if region != self.config.region {
-                let config_region = &self.config.region;
-                return Err(PetriError::ValueError(format!("Region mismatch on transition '{key}': configured region='{config_region}', region on etcd='{region}'.")));
-            }
-        };
+        loop {
+            let resp = kv.get(key.clone(), None).await?;
+            if resp.kvs().is_empty() {
+                let txn = Txn::new()
+                    // when 'key' has not yet been created ...
+                    .when([Compare::create_revision(key.clone(), CompareOp::Less, 1)])
+                    // ... put the region into the key
+                    .and_then([TxnOp::put(key.clone(), self.config.region.clone(), None)]);
+                let resp = kv.txn(txn).await?;
+                if !resp.succeeded() {
+                    debug!(key, "Parallel region assignment, retrying...");
+                    continue;
+                }
+                debug!(key, "Assigned region.");
+            } else {
+                let region = from_utf8(resp.kvs().first().unwrap().value())?;
+                if region != self.config.region {
+                    let config_region = &self.config.region;
+                    return Err(PetriError::ValueError(format!("Region mismatch on transition '{key}': configured region='{config_region}', region on etcd='{region}'.")));
+                }
+            };
+            break;
+        }
         Ok(())
     }
 

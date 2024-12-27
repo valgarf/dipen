@@ -3,7 +3,6 @@
 - cancel running transitions on start
 - statistics (transitions / s, how often each was fired?)
 - store arcs for transition / place on net
-- safeguard assign ids (transaction that checks nonexistence!)
 - python bindings
 - tests (with multiprocessing?)
 - visualization
