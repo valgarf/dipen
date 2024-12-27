@@ -238,6 +238,7 @@ struct SimpleTrans {
     pl_in: PlaceId,
     pl_out: PlaceId,
     tr_id: TransitionId,
+    delete: bool,
 }
 
 impl TransitionExecutor for SimpleTrans {
@@ -260,7 +261,7 @@ impl TransitionExecutor for SimpleTrans {
         info!("Creating transition {} (id: {})", ctx.transition_name(), ctx.transition_id().0);
         let pl_in = ctx.arcs_in().next().unwrap().place_context().place_id();
         let pl_out = ctx.arcs_out().next().unwrap().place_context().place_id();
-        SimpleTrans { pl_in, pl_out, tr_id: ctx.transition_id() }
+        SimpleTrans { pl_in, pl_out, tr_id: ctx.transition_id(), delete: false }
     }
 
     fn check_start(
@@ -268,6 +269,10 @@ impl TransitionExecutor for SimpleTrans {
         ctx: &mut impl petri_etcd_runner::transition::StartContext,
     ) -> CheckStartResult {
         info!("Check start of transition {}", self.tr_id.0);
+        if ctx.tokens_at(self.pl_in).count() >= 3 {
+            info!("Deleting token!");
+            self.delete = true;
+        }
         let next_token = ctx.tokens_at(self.pl_in).next();
         let mut result = CheckStartResult::build();
         match next_token {
@@ -283,13 +288,74 @@ impl TransitionExecutor for SimpleTrans {
         info!("Running transition {}", self.tr_id.0);
         tokio::time::sleep(Duration::from_secs(1)).await;
         let mut result = RunResult::build();
-        for to in ctx.tokens() {
-            result.place(to, self.pl_out);
-            result.update(to, format!("Placed by transition {}", self.tr_id.0).into());
+        if !self.delete {
+            for to in ctx.tokens() {
+                result.place(to, self.pl_out);
+                result.update(to, format!("Placed by transition {}", self.tr_id.0).into());
+            }
         }
         result.result()
     }
 }
+
+struct InitializeTrans {
+    pl_out: PlaceId,
+    pl_ids: Vec<PlaceId>,
+    tr_id: TransitionId,
+}
+
+impl TransitionExecutor for InitializeTrans {
+    fn validate(ctx: &impl petri_etcd_runner::transition::ValidateContext) -> ValidationResult
+    where
+        Self: Sized,
+    {
+        info!("Validating transition {}", ctx.transition_name());
+        if ctx.arcs_out().next().is_some() && ctx.arcs_cond().count() == ctx.arcs().count() {
+            ValidationResult::success()
+        } else {
+            ValidationResult::failure(
+                "Need at least one outgoing arc and all arcs must be conditional ones!",
+            )
+        }
+    }
+
+    fn new(ctx: &impl petri_etcd_runner::transition::CreateContext) -> Self
+    where
+        Self: Sized,
+    {
+        info!("Creating transition {} (id: {})", ctx.transition_name(), ctx.transition_id().0);
+        let pl_out = ctx.arcs_out().next().unwrap().place_context().place_id();
+        let pl_ids = ctx.arcs_cond().map(|actx| actx.place_context().place_id()).collect();
+        InitializeTrans { pl_out, pl_ids, tr_id: ctx.transition_id() }
+    }
+
+    fn check_start(
+        &mut self,
+        ctx: &mut impl petri_etcd_runner::transition::StartContext,
+    ) -> CheckStartResult {
+        info!("Check start of transition {}", self.tr_id.0);
+
+        let result = CheckStartResult::build();
+        let num_existing: usize = self
+            .pl_ids
+            .iter()
+            .map(|&pl_id| ctx.tokens_at(pl_id).count() + ctx.taken_tokens_at(pl_id).count())
+            .sum();
+        if num_existing > 3 {
+            return result.disabled(None, None);
+        }
+        result.enabled()
+    }
+
+    async fn run(&mut self, ctx: &mut impl petri_etcd_runner::transition::RunContext) -> RunResult {
+        info!("Running transition {}", self.tr_id.0);
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let mut result = RunResult::build();
+        result.place_new(self.pl_out, "newly created".into());
+        result.result()
+    }
+}
+
 #[tracing::instrument(level = "info")]
 async fn playground2() -> PetriResult<()> {
     let shutdown_token = CancellationToken::new();
@@ -319,8 +385,12 @@ async fn playground2() -> PetriResult<()> {
     net.insert_arc(net::Arc::new("pl2", "tr1", ArcVariant::Out, "".into()))?;
     net.insert_arc(net::Arc::new("pl2", "tr2", ArcVariant::In, "".into()))?;
     net.insert_arc(net::Arc::new("pl1", "tr2", ArcVariant::Out, "".into()))?;
+    net.insert_transition(Transition::new("tr-init", "test-region-1"))?;
+    net.insert_arc(net::Arc::new("pl1", "tr-init", ArcVariant::OutCond, "".into()))?;
+    net.insert_arc(net::Arc::new("pl2", "tr-init", ArcVariant::Cond, "".into()))?;
     executors1.register::<SimpleTrans>("tr1");
     executors2.register::<SimpleTrans>("tr2");
+    executors1.register::<InitializeTrans>("tr-init");
 
     // for i in 1..10 {
     //     let pl1 = format!("pl{i}-1");

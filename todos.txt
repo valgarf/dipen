@@ -1,4 +1,3 @@
-- create/destroy tokens with transitions
 - cancel running transitions on start
 - statistics (transitions / s, how often each was fired?)
 - store arcs for transition / place on net
@@ -7,3 +6,4 @@
 - visualization
 - mark running transitions?
 - output places without locking?
+- store 'last_changed', 'last_start_firing', 'last_finished_firing', etc. time from local time?

@@ -182,17 +182,23 @@ impl CheckStartResultBuilder {
 
 pub struct RunResult {
     pub(crate) place: Vec<(TokenId, PlaceId, PlaceId, Vec<u8>)>,
+    pub(crate) create: Vec<(PlaceId, Vec<u8>)>,
 }
 
 impl RunResult {
     pub fn build() -> RunResultBuilder {
-        RunResultBuilder { place: Default::default(), update: Default::default() }
+        RunResultBuilder {
+            place: Default::default(),
+            update: Default::default(),
+            create: Default::default(),
+        }
     }
 }
 
 pub struct RunResultBuilder {
     place: HashMap<TokenId, (Vec<u8>, PlaceId, PlaceId)>, // orig data, orig place, target place
     update: HashMap<TokenId, (Vec<u8>, PlaceId)>,         // updated data, orig place
+    create: Vec<(PlaceId, Vec<u8>)>,                      // new data, new place
 }
 
 impl RunResultBuilder {
@@ -203,6 +209,10 @@ impl RunResultBuilder {
 
     pub fn update(&mut self, to: &impl RunTokenContext, data: Vec<u8>) {
         self.update.insert(to.token_id(), (data, to.orig_place_id()));
+    }
+
+    pub fn place_new(&mut self, place_id: PlaceId, data: Vec<u8>) {
+        self.create.push((place_id, data));
     }
 
     pub fn result(mut self) -> RunResult {
@@ -220,7 +230,7 @@ impl RunResultBuilder {
         for (to_id, (data, pl_id)) in self.update.drain() {
             place_vec.push((to_id, pl_id, pl_id, data));
         }
-        RunResult { place: place_vec }
+        RunResult { place: place_vec, create: self.create }
     }
 }
 

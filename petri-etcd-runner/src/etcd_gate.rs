@@ -433,7 +433,9 @@ impl ETCDGate {
     ) -> Result<()> {
         let watch = watch_client.watch(
             prefix.clone() + "pl/",
-            Some(WatchOptions::new().with_prefix().with_start_revision(revision).with_prev_key()),
+            Some(
+                WatchOptions::new().with_prefix().with_start_revision(revision + 1).with_prev_key(),
+            ),
         );
         let (_watcher, mut stream) = watch.await?;
         while let Some(resp) = stream.message().await? {
@@ -707,8 +709,8 @@ impl ETCDGate {
         Ok(key.split('/').collect())
     }
 
-    async fn _get_next_id(kv: &mut KvClient, prefix: String, ktype: &str) -> Result<i64> {
-        let counter_name = prefix + "id_generator/" + ktype;
+    async fn _get_next_id(kv: &mut KvClient, prefix: &str, ktype: &str) -> Result<i64> {
+        let counter_name = [prefix, "id_generator/", ktype].concat();
         let resp = kv.put(counter_name, [], Some(PutOptions::new().with_prev_key())).await?;
         let version = match resp.prev_key() {
             Some(key) => key.version() + 1,
@@ -723,7 +725,7 @@ impl ETCDGate {
             let resp = kv.get(key.clone(), None).await?;
             let id: i64 = if resp.kvs().is_empty() {
                 // safeguard with some kind of lock? unlikely to be a problem here
-                let id = ETCDGate::_get_next_id(&mut kv, self.config.prefix.clone(), ktype).await?;
+                let id = ETCDGate::_get_next_id(&mut kv, &self.config.prefix, ktype).await?;
                 let txn = Txn::new()
                     // when 'key' has not yet been created ...
                     .when([Compare::create_revision(key.clone(), CompareOp::Less, 1)])
@@ -943,6 +945,8 @@ impl ETCDTransitionGate {
     pub async fn end_transition(
         &mut self,
         place: impl IntoIterator<Item = (TokenId, PlaceId, PlaceId, Vec<u8>)>,
+        create: impl IntoIterator<Item = (PlaceId, Vec<u8>)>,
+        destroy: impl IntoIterator<Item = (PlaceId, TokenId)>,
         fencing_tokens: &Vec<&Vec<u8>>,
     ) -> Result<u64> {
         // check if token is still at place? Should not happen if locks work correctly
@@ -950,6 +954,12 @@ impl ETCDTransitionGate {
             .iter()
             .map(|&fto| Compare::lease(fto.clone(), CompareOp::Equal, self.lease))
             .collect::<Vec<Compare>>();
+
+        let mut new_tokens = vec![];
+        for (pl_id, data) in create {
+            let new_id = ETCDGate::_get_next_id(&mut self.client, &self.prefix, "to").await?;
+            new_tokens.push((TokenId(new_id as u64), pl_id, data));
+        }
         let ops = place
             .into_iter()
             .flat_map(|(to_id, orig_pl_id, new_pl_id, data)| {
@@ -967,6 +977,15 @@ impl ETCDTransitionGate {
                 let put_op = TxnOp::put(_token_path(&self.prefix, new_pl_id, to_id), data, None);
                 [delete_op, put_op]
             })
+            .chain(new_tokens.into_iter().map(|(to_id, pl_id, data)| {
+                TxnOp::put(_token_path(&self.prefix, pl_id, to_id), data, None)
+            }))
+            .chain(destroy.into_iter().map(|(pl_id, to_id)| {
+                TxnOp::delete(
+                    _token_path(&self.prefix, pl_id, to_id),
+                    Some(DeleteOptions::new().with_prefix()),
+                )
+            }))
             .collect::<Vec<_>>();
 
         let txn = Txn::new().when(cond).and_then(ops);

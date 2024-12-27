@@ -451,8 +451,13 @@ impl TransitionRunner {
             };
 
             // We are done, lock output places
-            let target_places: HashSet<PlaceId> =
-                res.place.iter().map(|&(_, _, target, _)| target).collect();
+            let target_places: HashSet<PlaceId> = res
+                .place
+                .iter()
+                .map(|&(_, _, target, _)| target)
+                .chain(res.create.iter().map(|&(target, _)| target))
+                .collect();
+
             let mut locks = target_places
                 .iter()
                 .map(|pl_id| self.place_locks.get(pl_id).unwrap())
@@ -478,14 +483,32 @@ impl TransitionRunner {
                 _ = self.cancel_token.cancelled()  => {return;}
             }
 
-            // TODO: use fencing tokens to ensure we still have the locks
-            let revision = match self.etcd_gate.end_transition(res.place, &fencing_tokens).await {
+            let placed_to_ids: HashSet<TokenId> =
+                res.place.iter().map(|&(to_id, _, _, _)| to_id).collect();
+            let net = self.net_lock.read().await;
+            let destroy: HashSet<(PlaceId, TokenId)> = net
+                .transitions()
+                .get(&self.transition_id)
+                .unwrap()
+                .token_ids()
+                .iter()
+                .filter(|to_id| !placed_to_ids.contains(to_id) && net.tokens().contains_key(&to_id))
+                .map(|&to_id| (net.tokens().get(&to_id).unwrap().last_place(), to_id))
+                .collect();
+            // Should we check that the token's 'last_place' is a valid incoming arc?
+            // Could only be a problem if the locking is somehow broken / manual modification
+            let revision = match self
+                .etcd_gate
+                .end_transition(res.place, res.create, destroy, &fencing_tokens)
+                .await
+            {
                 Ok(revision) => revision,
                 Err(err) => {
                     error!("End transition failed with error: {}", err);
                     return;
                 }
             };
+            drop(net);
             drop(guards);
 
             select! {
