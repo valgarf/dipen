@@ -12,14 +12,16 @@ pub struct Place {
     name: String,
     pub(super) token_ids: HashSet<TokenId>,
     pub(super) taken_token_ids: HashMap<TokenId, TransitionId>,
+    pub(super) output_locking: bool,
 }
 
 impl Place {
-    pub fn new<S: AsRef<str>>(name: S) -> Self {
+    pub fn new<S: AsRef<str>>(name: S, output_locking: bool) -> Self {
         Place {
             name: name.as_ref().to_string(),
             token_ids: Default::default(),
             taken_token_ids: Default::default(),
+            output_locking,
         }
     }
 
@@ -33,6 +35,10 @@ impl Place {
 
     pub fn taken_token_ids(&self) -> &HashMap<TokenId, TransitionId> {
         &self.taken_token_ids
+    }
+
+    pub fn output_locking(&self) -> bool {
+        self.output_locking
     }
 }
 

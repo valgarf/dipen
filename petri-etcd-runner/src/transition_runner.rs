@@ -458,10 +458,15 @@ impl TransitionRunner {
                 .chain(res.create.iter().map(|&(target, _)| target))
                 .collect();
 
+            let net = self.net_lock.read().await;
             let mut locks = target_places
                 .iter()
+                .filter(|&pl_id| {
+                    net.places().get(pl_id).map(|pl| pl.output_locking()).unwrap_or(true)
+                })
                 .map(|pl_id| self.place_locks.get(pl_id).unwrap())
                 .collect::<Vec<_>>();
+            drop(net);
             locks.sort_by_key(|pl_lock| pl_lock.place_id);
             let mut guards: Vec<MutexGuard<PlaceLockData>> = Vec::with_capacity(locks.len());
             for l in locks {

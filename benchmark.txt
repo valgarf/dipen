@@ -1,7 +1,15 @@
-locking:                         Time: 33.745876576, executions: 164 => 4.859853014357211 transitions/s
-no locking, single net:          Time: 43.747500784, executions: 7069 => 161.58637346857037 transitions/s
-no locking,  2 independent nets: Time: 46.582239608, executions: 11460 => 246.0165096491382 transitions/s
-no locking,  4 independent nets: Time: 50.696815838, executions: 24074 => 474.8621703762949 transitions/s
-no locking,  8 independent nets: Time: 38.555627825, executions: 21399 => 555.0162507307064 transitions/s
-no locking, 16 independent nets: Time: 71.416014758, executions: 63052 => 882.8832050298205 transitions/s
-no locking, 32 independent nets: Time: 82.117237710, executions: 82687 => 1006.9384005829828 transitions/s
+be careful, large variance on these numbers.
+
+two running nodes:
+full locking:        Time: 84.555997365, executions: 416 => 4.919816606316722 transitions/s
+no output locking:   Time: 90.812337095, executions: 16485 => 181.52819900180324 transitions/s
+
+single running node (no locking via etcd):
+single net:          Time: 43.747500784, executions: 7069 => 161.58637346857037 transitions/s
+ 2 independent nets: Time: 46.582239608, executions: 11460 => 246.0165096491382 transitions/s
+ 4 independent nets: Time: 50.696815838, executions: 24074 => 474.8621703762949 transitions/s
+ 8 independent nets: Time: 38.555627825, executions: 21399 => 555.0162507307064 transitions/s
+16 independent nets: Time: 71.416014758, executions: 63052 => 882.8832050298205 transitions/s
+32 independent nets: Time: 82.117237710, executions: 82687 => 1006.9384005829828 transitions/s
+64 independent nets: Time: 60.841444208, executions: 130259 => 2140.958382820116 transitions/s
+
