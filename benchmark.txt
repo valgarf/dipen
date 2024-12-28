@@ -1,10 +1,31 @@
 be careful, large variance on these numbers.
 
-two running nodes:
+used net: 
+ 
+  tr1 ──► pl1 ◄─┤ tr-init
+  ▲       │        ┬    
+  │       ▼        │    
+ pl2 ◄── tr2       │    
+  │                │    
+  └────────────────┘    
+
+tr-init is only fired once at the beginning (but checked on every change)
+tr1 / tr2 take a token from their input place and put it on the output place immediatly
+
+etcd is running locally with a single node. Real deployments would have multiple etcd notes that
+need to communicate, so changes would need more time, i.e. a chain of transitions that need to 
+happen one after the other (as in the example net) are likely much slower.
+Furthermore, a real transition would likely have some side effect, which needs time to be executed.
+Throughput should not be affected much, see etcd benchmarks: https://etcd.io/docs/v3.5/benchmarks/
+TODO: benchmark with a realistic deployment (e.g. 3 etcd nodes on different machines.)
+
+two running petri net nodes:
+One node has tr2, the other one tr1 and tr-init
 full locking:        Time: 84.555997365, executions: 416 => 4.919816606316722 transitions/s
 no output locking:   Time: 90.812337095, executions: 16485 => 181.52819900180324 transitions/s
 
-single running node (no locking via etcd):
+
+single running petri net node (no locking via etcd, only locally):
 single net:          Time: 43.747500784, executions: 7069 => 161.58637346857037 transitions/s
  2 independent nets: Time: 46.582239608, executions: 11460 => 246.0165096491382 transitions/s
  4 independent nets: Time: 50.696815838, executions: 24074 => 474.8621703762949 transitions/s
@@ -12,4 +33,4 @@ single net:          Time: 43.747500784, executions: 7069 => 161.58637346857037 
 16 independent nets: Time: 71.416014758, executions: 63052 => 882.8832050298205 transitions/s
 32 independent nets: Time: 82.117237710, executions: 82687 => 1006.9384005829828 transitions/s
 64 independent nets: Time: 60.841444208, executions: 130259 => 2140.958382820116 transitions/s
-
+The independent nets are just copies of the test net above, all running on the same node.

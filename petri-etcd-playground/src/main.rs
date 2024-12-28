@@ -295,7 +295,7 @@ impl TransitionExecutor for SimpleTrans {
     async fn run(&mut self, ctx: &mut impl petri_etcd_runner::transition::RunContext) -> RunResult {
         EXECUTION_COUNT.fetch_add(1, Ordering::Relaxed);
         info!("Running transition {}", self.tr_id.0);
-        // tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
         let mut result = RunResult::build();
         if !self.delete {
             for to in ctx.tokens() {
@@ -361,7 +361,7 @@ impl TransitionExecutor for InitializeTrans {
         _ctx: &mut impl petri_etcd_runner::transition::RunContext,
     ) -> RunResult {
         info!("Running transition {}", self.tr_id.0);
-        // tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
         let mut result = RunResult::build();
         result.place_new(self.pl_out, "newly created".into());
         result.result()
@@ -392,7 +392,7 @@ async fn playground2() -> PetriResult<()> {
     net.insert_place(Place::new("pl1", false))?;
     net.insert_place(Place::new("pl2", false))?;
     net.insert_transition(Transition::new("tr1", "test-region-1"))?;
-    net.insert_transition(Transition::new("tr2", "test-region-2"))?;
+    net.insert_transition(Transition::new("tr2", "test-region-1"))?;
     net.insert_arc(net::Arc::new("pl1", "tr1", ArcVariant::In, "".into()))?;
     net.insert_arc(net::Arc::new("pl2", "tr1", ArcVariant::Out, "".into()))?;
     net.insert_arc(net::Arc::new("pl2", "tr2", ArcVariant::In, "".into()))?;
@@ -438,16 +438,16 @@ async fn playground2() -> PetriResult<()> {
     let run1 =
         petri_etcd_runner::runner::run(Arc::clone(&net), etcd, executors1, shutdown_token.clone());
 
-    let config = ETCDConfigBuilder::default()
-        .endpoints(["localhost:2379"])
-        .prefix("/petri-test/")
-        .node_name("node2")
-        .region("test-region-2")
-        .build()?;
+    // let config = ETCDConfigBuilder::default()
+    //     .endpoints(["localhost:2379"])
+    //     .prefix("/petri-test/")
+    //     .node_name("node2")
+    //     .region("test-region-2")
+    //     .build()?;
 
-    let etcd = ETCDGate::new(config);
-    let run2 =
-        petri_etcd_runner::runner::run(Arc::clone(&net), etcd, executors2, shutdown_token.clone());
+    // let etcd = ETCDGate::new(config);
+    // let run2 =
+    //     petri_etcd_runner::runner::run(Arc::clone(&net), etcd, executors2, shutdown_token.clone());
 
     let start = Instant::now();
     let mut join_set = JoinSet::new();
@@ -463,16 +463,16 @@ async fn playground2() -> PetriResult<()> {
         }
     });
 
-    join_set.spawn(async {
-        match run2.await {
-            Ok(_) => {
-                info!("Run2 finished")
-            }
-            Err(err) => {
-                error!("Run2 finished with: {}", err)
-            }
-        }
-    });
+    // join_set.spawn(async {
+    //     match run2.await {
+    //         Ok(_) => {
+    //             info!("Run2 finished")
+    //         }
+    //         Err(err) => {
+    //             error!("Run2 finished with: {}", err)
+    //         }
+    //     }
+    // });
 
     join_set.join_all().await;
     let end = Instant::now();
@@ -496,7 +496,7 @@ async fn main() -> PetriResult<()> {
                 | tracing_subscriber::fmt::format::FmtSpan::NEW,
         )
         .compact()
-        .with_env_filter(EnvFilter::try_new("warn,petri_etcd_runner=warn").unwrap())
+        .with_env_filter(EnvFilter::try_new("info,petri_etcd_runner=debug").unwrap())
         .init();
 
     return playground2().await;

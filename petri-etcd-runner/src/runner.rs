@@ -129,6 +129,7 @@ pub async fn run(
                 region_name: region_name.clone(),
                 node_name: node_name.clone(),
                 transition_name: tr_name.into(),
+                run_data: Default::default()
             };
             transition_tasks.spawn(runner.run_transition()); 
         }
@@ -199,35 +200,6 @@ pub async fn run(
         }
     }
     .await;
-
-    // campaign for given election name
-
-    // make sure all places / transitions exist on etcd
-
-    // - lock all non-multiplex transitions
-    // - wait for all others to be free of locks?
-    // -> inform user about starting delay if waiting here
-    // -> timeout?
-
-    // start listening to state token data / place / transition changes
-    // load current state for places + transitions -> take maximum revision
-    // load token data for that revision
-    // listen for changes starting from that revision
-    // changes to a given place -> send place over channel to main loop
-
-    // list all transitions as "to_check"
-    // main loop:
-    // - if cancelled:
-    //   -> cancel all running transitions (they should have separate cancel tokens)
-    // - check all transitions in "to_check"
-    // - record for which places the transition needs to wait (possible to all of them) / possibly timeouts
-    //   -> start (and remember) a task for each transition that seems ready
-    // - go through channel and put all relevant transitions into 'to_check'
-    // - check timeouts and put transitions into 'to_check'
-    // if 'to_check' is empty:
-    // wait for lowest timeout / next message on channel / cancellation
-
-    // release lease
 
     // finally:
     etcd.disconnect().await;

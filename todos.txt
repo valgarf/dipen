@@ -1,9 +1,9 @@
 - cancel running transitions on start
-- statistics (transitions / s, how often each was fired?)
-- store arcs for transition / place on net
+- store arcs for transition / place on net (BTree with transition id first?)
 - python bindings
 - tests (with multiprocessing?)
 - visualization
 - mark running transitions?
-- output places without locking?
 - store 'last_changed', 'last_start_firing', 'last_finished_firing', etc. time from local time?
+- statistics (transitions / s, how often each was fired?)
+- remove transitions from own region on etcd, if not in configuration?

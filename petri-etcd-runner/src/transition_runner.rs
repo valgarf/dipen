@@ -9,6 +9,7 @@ use tokio::sync::{MutexGuard, RwLock};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, trace};
 
+use crate::error::{PetriError, Result};
 use crate::net::{self, PetriNet, PlaceId, TokenId, TransitionId};
 use crate::place_locks::{PlaceLock, PlaceLockData};
 use crate::transition::{
@@ -32,6 +33,13 @@ pub(crate) struct TransitionRunner {
     pub region_name: String,
     pub node_name: String,
     pub transition_name: String,
+    pub run_data: RunData,
+}
+
+#[derive(Default)]
+pub(crate) struct RunData {
+    wait_for: Option<net::PlaceId>,
+    auto_recheck: Duration,
 }
 
 // # context implementations
@@ -306,10 +314,75 @@ impl<T: TransitionExecutor + Send + Sync + 'static> TransitionExecutorDispatch
 }
 
 // runner implementation
-
 impl TransitionRunner {
     #[tracing::instrument(level = "debug", skip(self), fields(transition=format!("{} ({})", self.transition_name, self.transition_id.0), region=self.region_name, node=self.node_name))]
     pub async fn run_transition(mut self) {
+        let cancel_token = self.cancel_token.clone();
+        select! {
+            res = self._run_transition() => {
+                if let Err(err) = res{
+                    if ! matches!(err, PetriError::Cancelled()){
+                error!("Running transition failed with error: {}", err)
+                }}
+            }
+            _ = cancel_token.cancelled() => {}
+        }
+    }
+
+    async fn _run_transition(&mut self) -> Result<()> {
+        self._create_executor().await;
+        loop {
+            // wait for any change on a relevant place (relevant -> input / condition arcs)
+            self._wait_for_change().await?;
+            // check if we can run without locking anything
+            if self._check_start().await?.is_none() {
+                // most of the time we cannot run, continue waiting
+                continue;
+            }
+            // we could run in the current state, lock all relevant places
+            let mut start_locks = self._cond_place_locks();
+            let guards =
+                TransitionRunner::_lock(&mut start_locks, Some(&mut self.rx_revision)).await?;
+            // after locking, we check again
+            let take = match self._check_start().await? {
+                None => {
+                    // state has changed while acquiring locks, we cannot run. Continue waiting
+                    continue;
+                }
+                // we can run, _check_start returned the tokens the transition wants to take
+                Some(take) => take,
+            };
+            let fencing_tokens = TransitionRunner::_get_fencing_tokens(&guards);
+            trace!("Starting transition.");
+            // update state of taken tokens on etcd
+            let revision = self._start_transition(&take, fencing_tokens).await?;
+            // get the run context, afterwards we don't need to hold the locks any longer
+            let mut ctx = self._run_context(&take).await?;
+            TransitionRunner::_release_locks(guards, revision);
+            drop(start_locks);
+
+            // actually run the transition
+            let res = self._run(&mut ctx).await?;
+
+            // we are done, we need to update the state of the target places, i.e.
+            // locking output places and sending an update to etcd
+            let mut finish_locks = self._target_place_locks(&res).await;
+            let guards = TransitionRunner::_lock(&mut finish_locks, None).await?;
+            let fencing_tokens = TransitionRunner::_get_fencing_tokens(&guards);
+            let new_revision = self._finish_transition(res, fencing_tokens).await?;
+            TransitionRunner::_release_locks(guards, new_revision);
+
+            trace!("Finished transition.");
+            // we wait for the local net to update to the latest revision we created
+            let _ = self
+                .rx_revision
+                .wait_for(move |&rev| rev >= new_revision)
+                .await
+                .map_err(|_| PetriError::Cancelled())?;
+        }
+    }
+
+    async fn _create_executor(&mut self) {
         let net = self.net_lock.read().await;
         let ctx = CreateContextStruct {
             net: &net,
@@ -324,204 +397,175 @@ impl TransitionRunner {
                 .collect(),
         };
         self.exec.create(&ctx);
-        drop(ctx);
-        drop(net);
+    }
 
-        let mut wait_for: Option<net::PlaceId> = None;
-        let mut auto_recheck: Duration = Duration::default();
-        loop {
-            let wait_for_change = async {
-                match wait_for {
-                    None => {
-                        let futures: Vec<_> =
-                            self.place_rx.values_mut().map(|rec| rec.changed().boxed()).collect();
-                        let _ = select_all(futures).await;
-                    }
-                    Some(pl_id) => {
-                        let _ = self.place_rx.get_mut(&pl_id).unwrap().changed().await;
-                    }
+    async fn _wait_for_change(&mut self) -> Result<()> {
+        let wait_for_change = async {
+            match self.run_data.wait_for {
+                None => {
+                    let futures: Vec<_> =
+                        self.place_rx.values_mut().map(|rec| rec.changed().boxed()).collect();
+                    let _ = select_all(futures).await;
                 }
-            };
-
-            let auto_recheck_fut = async {
-                if !auto_recheck.is_zero() {
-                    tokio::time::sleep(auto_recheck).await;
-                } else {
-                    loop {
-                        tokio::time::sleep(Duration::from_secs(3600)).await;
-                    }
+                Some(pl_id) => {
+                    let _ = self.place_rx.get_mut(&pl_id).unwrap().changed().await;
                 }
-            };
-            select! {
-                _ = wait_for_change => {},
-                _ = auto_recheck_fut => {}
-                _ = self.cancel_token.cancelled()  => {return;}
             }
-            for rec in self.place_rx.values_mut() {
-                rec.mark_unchanged();
-            }
+        };
 
-            // check with current state without locking
-            let net = self.net_lock.read().await;
-            let mut ctx = StartContextStruct::new(&net);
-            let start_res = self.exec.check_start(&mut ctx);
-            match start_res.choice {
-                CheckStartChoice::Disabled(data) => {
-                    wait_for = data.wait_for;
-                    auto_recheck = data.auto_recheck;
-                    // TODO: handle auto recheck
-                    continue;
+        let auto_recheck_fut = async {
+            if !self.run_data.auto_recheck.is_zero() {
+                tokio::time::sleep(self.run_data.auto_recheck).await;
+            } else {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(3600)).await;
                 }
-                CheckStartChoice::Enabled(_) => {}
-            };
-            drop(net);
-            // we believe we could fire, lets lock all relevant places, wait for a revision matching
-            // the locks and then check again
-            let mut locks = self
-                .place_locks
-                .values()
-                .filter(|pl_lock| self.place_rx.contains_key(&pl_lock.place_id))
-                // TODO: would be much nicer if the net would provide the list of relevant places
-                .collect::<Vec<_>>();
-            locks.sort_by_key(|pl_lock| pl_lock.place_id);
-            let mut guards: Vec<MutexGuard<PlaceLockData>> = Vec::with_capacity(locks.len());
-            for l in locks {
-                match l.acquire().await {
-                    Ok(guard) => guards.push(guard),
-                    Err(err) => {
-                        error!(
-                            "Lock acquisition of place '{}' failed with error: {}",
-                            l.place_id.0, err
-                        );
-                        return;
-                    }
-                };
             }
-            let min_revision = guards.iter().map(|g| g.min_revision).max().unwrap_or(0);
-            let fencing_tokens: Vec<&Vec<u8>> = guards.iter().map(|g| &g.fencing_token).collect();
-            select! {
-                _ = self.rx_revision.wait_for(move |&rev| {rev>=min_revision}) => {},
-                _ = self.cancel_token.cancelled()  => {return;}
-            }
-
-            let net = self.net_lock.read().await;
-            let mut ctx = StartContextStruct::new(&net);
-            let start_res = self.exec.check_start(&mut ctx);
-            let take_tokens = match start_res.choice {
-                CheckStartChoice::Disabled(data) => {
-                    wait_for = data.wait_for;
-                    auto_recheck = data.auto_recheck;
-                    continue;
-                }
-                CheckStartChoice::Enabled(data) => data.take,
-            };
-            trace!("Running transition.");
-            let new_revision =
-                match self.etcd_gate.start_transition(take_tokens.clone(), &fencing_tokens).await {
-                    Ok(new_revision) => new_revision,
-                    Err(err) => {
-                        error!(
-                            "Start transition '{}' via etcd failed with error: {}",
-                            self.transition_id.0, err
-                        );
-                        return;
-                    }
-                };
-            for g in &mut guards {
-                g.min_revision = new_revision;
-            }
-            let mut ctx = RunContextStruct {
-                tokens: take_tokens
-                    .into_iter()
-                    .map(|(to_id, orig_pl_id)| RunTokenContextStruct {
-                        token_id: to_id,
-                        orig_place_id: orig_pl_id,
-                        data: net.tokens().get(&to_id).unwrap().data().into(),
-                    })
-                    .collect(),
-            };
-            drop(net);
-            drop(guards);
-
-            let op = self.exec.run(&mut ctx);
-            let res = select! {
-                res = op => {res},
-                _ = self.cancel_token.cancelled()  => {return;}
-                // NOTE: if we want external cancellation, wait for it here
-            };
-
-            // We are done, lock output places
-            let target_places: HashSet<PlaceId> = res
-                .place
-                .iter()
-                .map(|&(_, _, target, _)| target)
-                .chain(res.create.iter().map(|&(target, _)| target))
-                .collect();
-
-            let net = self.net_lock.read().await;
-            let mut locks = target_places
-                .iter()
-                .filter(|&pl_id| {
-                    net.places().get(pl_id).map(|pl| pl.output_locking()).unwrap_or(true)
-                })
-                .map(|pl_id| self.place_locks.get(pl_id).unwrap())
-                .collect::<Vec<_>>();
-            drop(net);
-            locks.sort_by_key(|pl_lock| pl_lock.place_id);
-            let mut guards: Vec<MutexGuard<PlaceLockData>> = Vec::with_capacity(locks.len());
-            for l in locks {
-                match l.acquire().await {
-                    Ok(guard) => guards.push(guard),
-                    Err(err) => {
-                        error!(
-                            "Lock acquisition of place '{}' failed with error: {}",
-                            l.place_id.0, err
-                        );
-                        return;
-                    }
-                };
-            }
-            let min_revision = guards.iter().map(|g| g.min_revision).max().unwrap_or(0);
-            let fencing_tokens: Vec<&Vec<u8>> = guards.iter().map(|g| &g.fencing_token).collect();
-            select! {
-                _ = self.rx_revision.wait_for(move |&rev| {rev>=min_revision}) => {},
-                _ = self.cancel_token.cancelled()  => {return;}
-            }
-
-            let placed_to_ids: HashSet<TokenId> =
-                res.place.iter().map(|&(to_id, _, _, _)| to_id).collect();
-            let net = self.net_lock.read().await;
-            let destroy: HashSet<(PlaceId, TokenId)> = net
-                .transitions()
-                .get(&self.transition_id)
-                .unwrap()
-                .token_ids()
-                .iter()
-                .filter(|to_id| !placed_to_ids.contains(to_id) && net.tokens().contains_key(&to_id))
-                .map(|&to_id| (net.tokens().get(&to_id).unwrap().last_place(), to_id))
-                .collect();
-            // Should we check that the token's 'last_place' is a valid incoming arc?
-            // Could only be a problem if the locking is somehow broken / manual modification
-            let revision = match self
-                .etcd_gate
-                .end_transition(res.place, res.create, destroy, &fencing_tokens)
-                .await
-            {
-                Ok(revision) => revision,
-                Err(err) => {
-                    error!("End transition failed with error: {}", err);
-                    return;
-                }
-            };
-            drop(net);
-            drop(guards);
-
-            select! {
-                _ = self.rx_revision.wait_for(move |&rev| {rev>=revision}) => {},
-                _ = self.cancel_token.cancelled()  => {return;}
-            }
-
-            trace!("Finished transition.");
+        };
+        select! {
+            _ = wait_for_change => {},
+            _ = auto_recheck_fut => {}
         }
+        // we will check if we can run with the current state. Throw away all additional change
+        // notifications
+        for rec in self.place_rx.values_mut() {
+            rec.mark_unchanged();
+        }
+        // we unset the wait for data. Any failure on '_check_start' will set a new value.
+        // If we actually run the transition, we want to recheck on any change.
+        self.run_data.wait_for = None;
+        self.run_data.auto_recheck = Duration::default();
+        Ok(())
+    }
+
+    async fn _check_start(&mut self) -> Result<Option<Vec<(TokenId, PlaceId)>>> {
+        let net = self.net_lock.read().await;
+        let mut ctx = StartContextStruct::new(&net);
+        match self.exec.check_start(&mut ctx).choice {
+            CheckStartChoice::Disabled(data) => {
+                self.run_data.wait_for = data.wait_for;
+                self.run_data.auto_recheck = data.auto_recheck;
+                Ok(None)
+            }
+            CheckStartChoice::Enabled(data) => Ok(Some(data.take)),
+        }
+    }
+
+    fn _cond_place_ids(&self) -> Vec<PlaceId> {
+        self.place_rx.keys().copied().collect()
+    }
+
+    fn _cond_place_locks(&self) -> Vec<Arc<PlaceLock>> {
+        self._cond_place_ids()
+            .iter()
+            .map(|pl_id| {
+                Arc::clone(self.place_locks.get(pl_id).expect("Place if not found in place locks"))
+            })
+            .collect()
+    }
+
+    async fn _lock<'a>(
+        locks: &'a mut Vec<Arc<PlaceLock>>,
+        rx_revision: Option<&mut tokio::sync::watch::Receiver<u64>>,
+    ) -> Result<Vec<MutexGuard<'a, PlaceLockData>>> {
+        locks.sort_by_key(|pl_lock| pl_lock.place_id);
+        let mut guards: Vec<MutexGuard<PlaceLockData>> = Vec::with_capacity(locks.len());
+        for l in locks {
+            guards.push(l.acquire().await?);
+        }
+        // Note: locks come with a minimum revision. The local net needs to be up to date with this
+        // revision at least, otherwise the local net is still in a state we had before we acquired
+        // the locks.
+        // The revision is taken from etcd if the lock was newly acquired. If some other task held
+        // the lock before, it should have updated the revision to the last change it uploaded to
+        // etcd.
+        let min_revision = guards.iter().map(|g| g.min_revision).max().unwrap_or(0);
+        if let Some(rx_revision) = rx_revision {
+            rx_revision
+                .wait_for(move |&rev| rev >= min_revision)
+                .await
+                .map_err(|_| PetriError::Cancelled())?;
+        }
+        Ok(guards)
+    }
+
+    fn _get_fencing_tokens<'a>(guards: &'a Vec<MutexGuard<PlaceLockData>>) -> Vec<&'a Vec<u8>> {
+        guards.iter().map(|g| &g.fencing_token).collect()
+    }
+
+    fn _release_locks(mut guards: Vec<MutexGuard<PlaceLockData>>, revision: u64) {
+        for g in &mut guards {
+            g.min_revision = revision;
+        }
+    }
+
+    async fn _start_transition(
+        &mut self,
+        take: &[(TokenId, PlaceId)],
+        fencing_tokens: Vec<&Vec<u8>>,
+    ) -> Result<u64> {
+        self.etcd_gate.start_transition(take.iter().copied(), &fencing_tokens).await
+    }
+
+    async fn _run_context(&mut self, take: &[(TokenId, PlaceId)]) -> Result<RunContextStruct> {
+        let net = self.net_lock.read().await;
+        Ok(RunContextStruct {
+            tokens: take
+                .iter()
+                .map(|&(to_id, orig_pl_id)| RunTokenContextStruct {
+                    token_id: to_id,
+                    orig_place_id: orig_pl_id,
+                    data: net.tokens().get(&to_id).unwrap().data().into(),
+                })
+                .collect(),
+        })
+    }
+    async fn _run(&mut self, ctx: &mut RunContextStruct) -> Result<RunResult> {
+        Ok(self.exec.run(ctx).await)
+    }
+
+    async fn _target_place_locks(&self, res: &RunResult) -> Vec<Arc<PlaceLock>> {
+        // TODO: is it necessary to lock the places we took tokens from?
+        // We will be moving / destroying those tokens and the transitions start method's may use
+        // their existence to decide wether to start or not.
+        let target_places: HashSet<PlaceId> = res
+            .place
+            .iter()
+            .map(|&(_, _, target, _)| target)
+            .chain(res.create.iter().map(|&(target, _)| target))
+            .collect();
+
+        let net = self.net_lock.read().await;
+        let mut locks = target_places
+            .iter()
+            .filter(|&pl_id| net.places().get(pl_id).map(|pl| pl.output_locking()).unwrap_or(true))
+            .map(|pl_id| Arc::clone(self.place_locks.get(pl_id).unwrap()))
+            .collect::<Vec<_>>();
+        locks.sort_by_key(|pl_lock| pl_lock.place_id);
+        locks
+    }
+
+    async fn _finish_transition(
+        &mut self,
+        res: RunResult,
+        fencing_tokens: Vec<&Vec<u8>>,
+    ) -> Result<u64> {
+        let placed_to_ids: HashSet<TokenId> =
+            res.place.iter().map(|&(to_id, _, _, _)| to_id).collect();
+        let net = self.net_lock.read().await;
+        let destroy: HashSet<(PlaceId, TokenId)> = net
+            .transitions()
+            .get(&self.transition_id)
+            .unwrap()
+            .token_ids()
+            .iter()
+            .filter(|to_id| !placed_to_ids.contains(to_id) && net.tokens().contains_key(to_id))
+            .map(|&to_id| (net.tokens().get(&to_id).unwrap().last_place(), to_id))
+            .collect();
+        // Should we check that the token's 'last_place' is a valid incoming arc?
+        // Could only be a problem if the locking is somehow broken / manual modification
+        let revision =
+            self.etcd_gate.end_transition(res.place, res.create, destroy, &fencing_tokens).await?;
+        Ok(revision)
     }
 }
