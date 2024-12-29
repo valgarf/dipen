@@ -171,8 +171,8 @@ async fn playground() -> PetriResult<()> {
     let mut executors1 = ExecutorRegistry::new();
     let mut executors2 = ExecutorRegistry::new();
 
-    net.insert_place(Place::new("pl1", false))?;
-    net.insert_place(Place::new("pl2", false))?;
+    net.insert_place(Place::new("pl1", true))?;
+    net.insert_place(Place::new("pl2", true))?;
     net.insert_transition(Transition::new("tr1", "test-region-1"))?;
     net.insert_transition(Transition::new("tr2", "test-region-1"))?;
     net.insert_arc(net::Arc::new("pl1", "tr1", ArcVariant::In, "".into()))?;
@@ -214,6 +214,7 @@ async fn playground() -> PetriResult<()> {
         .prefix("/petri-test/")
         .node_name("node1")
         .region("test-region-1")
+        .lease_id(102)
         .build()?;
 
     let etcd = ETCDGate::new(config);

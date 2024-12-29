@@ -1,5 +1,7 @@
 use std::{fmt::Display, str::from_utf8};
 
+use unicode_segmentation::UnicodeSegmentation;
+
 use super::{PlaceId, TokenId, TransitionId};
 
 #[derive(Debug)]
@@ -43,6 +45,23 @@ impl Display for NetChangeEvent {
     }
 }
 
+fn _data_as_string(data: &[u8], max_len: usize) -> String {
+    let s = from_utf8(data).unwrap_or("<not valid utf8>");
+    if s.len() <= max_len {
+        // Note: length in bytes, but each grapheme must have one byte at least.
+        return s.into();
+    }
+    let mut graphemes = s.graphemes(true).take(max_len + 1).collect::<Vec<_>>();
+    if graphemes.len() > max_len {
+        graphemes.remove(max_len);
+        graphemes[max_len - 1] = ".";
+        graphemes[max_len - 2] = ".";
+        graphemes[max_len - 3] = ".";
+    }
+
+    graphemes.concat().into()
+}
+
 impl Display for NetChange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -65,7 +84,7 @@ impl Display for NetChange {
                     "Update({} at transition {}: '{}')",
                     token_id.0,
                     transition_id.0,
-                    from_utf8(data).unwrap_or("<not valid utf8>")
+                    _data_as_string(data, 100)
                 )
             }
             NetChange::Reset() => write!(f, "Reset()"),
@@ -76,12 +95,7 @@ impl Display for NetChange {
                 write!(f, "ExternalDelete({} at place {})", token_id.0, place_id.0)
             }
             NetChange::ExternalUpdate(token_id, data) => {
-                write!(
-                    f,
-                    "ExternalUpdate({} at ?: '{}')",
-                    token_id.0,
-                    from_utf8(data).unwrap_or("<not valid utf8>")
-                )
+                write!(f, "ExternalUpdate({} at ?: '{}')", token_id.0, _data_as_string(data, 100))
             }
         }
     }

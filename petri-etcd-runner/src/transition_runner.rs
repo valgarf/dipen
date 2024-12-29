@@ -7,7 +7,7 @@ use std::time::Duration;
 use tokio::select;
 use tokio::sync::{MutexGuard, RwLock, RwLockReadGuard};
 use tokio_util::sync::CancellationToken;
-use tracing::{error, trace};
+use tracing::{error, info, trace};
 
 use crate::error::{PetriError, Result};
 use crate::net::{self, PetriNet, PlaceId, TokenId, TransitionId};
@@ -417,6 +417,14 @@ impl TransitionRunner {
         let net = self.net_lock.read().await;
         let token_ids = net.transitions().get(&self.transition_id).unwrap().token_ids();
         if !token_ids.is_empty() {
+            info!(
+                "Cancelled transition on startup, returning tokens: [{}]",
+                token_ids
+                    .iter()
+                    .map(|to_id| to_id.0.to_string())
+                    .collect::<Vec<String>>()
+                    .join(",")
+            );
             let res = RunResult {
                 place: token_ids
                     .iter()
