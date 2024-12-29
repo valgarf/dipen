@@ -193,7 +193,7 @@ pub async fn run(
                     continue;
                 }
                 let _ = tx_revision.send(revision); 
-                // NOTE: tx_revision can only be closed if all transition runners are done.
+                // Note: tx_revision can only be closed if all transition runners are done.
                 // Error can be ignored here, we handle that case elsewhere.
             }
             drop(net_guard.take());

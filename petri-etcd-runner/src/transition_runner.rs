@@ -5,7 +5,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::select;
-use tokio::sync::{MutexGuard, RwLock};
+use tokio::sync::{MutexGuard, RwLock, RwLockReadGuard};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, trace};
 
@@ -14,7 +14,7 @@ use crate::net::{self, PetriNet, PlaceId, TokenId, TransitionId};
 use crate::place_locks::{PlaceLock, PlaceLockData};
 use crate::transition::{
     CheckStartChoice, CheckStartResult, CreateArcContext, CreateContext, CreatePlaceContext,
-    RunContext, RunResult, RunTokenContext, StartContext, StartTakenTokenContext,
+    RunContext, RunResult, RunResultBuilder, RunTokenContext, StartContext, StartTakenTokenContext,
     StartTokenContext, TransitionExecutor, ValidateArcContext, ValidateContext,
     ValidatePlaceContext, ValidationResult,
 };
@@ -320,10 +320,11 @@ impl TransitionRunner {
         let cancel_token = self.cancel_token.clone();
         select! {
             res = self._run_transition() => {
-                if let Err(err) = res{
-                    if ! matches!(err, PetriError::Cancelled()){
-                error!("Running transition failed with error: {}", err)
-                }}
+                if let Err(err) = res {
+                    if ! matches!(err, PetriError::Cancelled()) {
+                        error!("Running transition failed with error: {}", err);
+                    }
+                }
             }
             _ = cancel_token.cancelled() => {}
         }
@@ -331,6 +332,12 @@ impl TransitionRunner {
 
     async fn _run_transition(&mut self) -> Result<()> {
         self._create_executor().await;
+        // loading event should have been handled before checking for transitions to cancel
+        TransitionRunner::_wait_for_revision(&mut self.rx_revision, 1).await?;
+        // We are just starting. If any token is still taken by our transitions, we need
+        // to give it back to the input place. No one else should be running!
+        self._cancel_running().await?;
+
         loop {
             // wait for any change on a relevant place (relevant -> input / condition arcs)
             self._wait_for_change().await?;
@@ -374,12 +381,19 @@ impl TransitionRunner {
 
             trace!("Finished transition.");
             // we wait for the local net to update to the latest revision we created
-            let _ = self
-                .rx_revision
-                .wait_for(move |&rev| rev >= new_revision)
-                .await
-                .map_err(|_| PetriError::Cancelled())?;
+            TransitionRunner::_wait_for_revision(&mut self.rx_revision, new_revision).await?;
         }
+    }
+
+    async fn _wait_for_revision(
+        rx_revision: &mut tokio::sync::watch::Receiver<u64>,
+        revision: u64,
+    ) -> Result<()> {
+        rx_revision
+            .wait_for(move |&rev| rev >= revision)
+            .await
+            .map_err(|_| PetriError::Cancelled())?;
+        Ok(())
     }
 
     async fn _create_executor(&mut self) {
@@ -397,6 +411,29 @@ impl TransitionRunner {
                 .collect(),
         };
         self.exec.create(&ctx);
+    }
+
+    async fn _cancel_running(&mut self) -> Result<()> {
+        let net = self.net_lock.read().await;
+        let token_ids = net.transitions().get(&self.transition_id).unwrap().token_ids();
+        if !token_ids.is_empty() {
+            let res = RunResult {
+                place: token_ids
+                    .iter()
+                    .map(|&to_id| {
+                        let to = net.tokens().get(&to_id).unwrap();
+                        (to_id, to.last_place(), to.last_place(), to.data().into())
+                    })
+                    .collect(),
+                create: vec![],
+            };
+            drop(net);
+            let mut finish_locks = self._target_place_locks(&res).await;
+            let guards = TransitionRunner::_lock(&mut finish_locks, None).await?;
+            let fencing_tokens = TransitionRunner::_get_fencing_tokens(&guards);
+            self._finish_transition(res, fencing_tokens).await?;
+        }
+        Ok(())
     }
 
     async fn _wait_for_change(&mut self) -> Result<()> {
@@ -481,10 +518,7 @@ impl TransitionRunner {
         // etcd.
         let min_revision = guards.iter().map(|g| g.min_revision).max().unwrap_or(0);
         if let Some(rx_revision) = rx_revision {
-            rx_revision
-                .wait_for(move |&rev| rev >= min_revision)
-                .await
-                .map_err(|_| PetriError::Cancelled())?;
+            TransitionRunner::_wait_for_revision(rx_revision, min_revision).await?;
         }
         Ok(guards)
     }

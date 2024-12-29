@@ -903,13 +903,13 @@ fn _token_path(prefix: &str, pl_id: PlaceId, to_id: TokenId) -> String {
 fn _token_taken_path(prefix: &str, pl_id: PlaceId, to_id: TokenId, tr_id: TransitionId) -> String {
     format!("{to_path}/{tr_id}", to_path = _token_path(prefix, pl_id, to_id), tr_id = tr_id.0)
 }
+
 impl ETCDTransitionGate {
     pub async fn start_transition(
         &mut self,
         take: impl IntoIterator<Item = (TokenId, PlaceId)>,
         fencing_tokens: &Vec<&Vec<u8>>,
     ) -> Result<u64> {
-        // TODO: check locks
         let txn = Txn::new()
             .when(
                 fencing_tokens
@@ -923,7 +923,8 @@ impl ETCDTransitionGate {
                         TxnOp::put(
                             _token_taken_path(&self.prefix, pl_id, to_id, self.transition_id),
                             "",
-                            Some(PutOptions::new().with_lease(self.lease)),
+                            None,
+                            //Some(PutOptions::new().with_lease(self.lease)),
                         )
                     })
                     .collect::<Vec<_>>(),
@@ -936,7 +937,7 @@ impl ETCDTransitionGate {
                 .revision() as u64)
         } else {
             Err(PetriError::InconsistentState(format!(
-                "Failed to execute transaction on etcd to start transition '{}'",
+                "Failed to execute transaction on etcd to start transition '{}' (lease lost?)",
                 self.transition_id.0
             )))
         }
@@ -990,6 +991,12 @@ impl ETCDTransitionGate {
 
         let txn = Txn::new().when(cond).and_then(ops);
         let resp = self.client.txn(txn).await?;
+        if !resp.succeeded() {
+            return Err(PetriError::InconsistentState(format!(
+                "Failed to execute transaction on etcd to end transition '{}' (lease lost?)",
+                self.transition_id.0
+            )));
+        }
         let header =
             resp.header().ok_or(PetriError::Other("header missing from etcd reply.".into()))?;
         Ok(header.revision() as u64)

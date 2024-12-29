@@ -17,7 +17,3 @@ tracing = { version = "0.1.41", features = ["async-await"] }
 [dev-dependencies]
 criterion = "0.5.1"
 
-[[bench]]
-name = "string_benchmark"
-harness = false
-
