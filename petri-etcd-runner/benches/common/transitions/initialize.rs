@@ -1,4 +1,4 @@
-use std::any::Any;
+use std::{any::Any, sync::Arc};
 
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 use petri_etcd_runner::{
@@ -10,6 +10,10 @@ use petri_etcd_runner::{
 };
 use tracing::info;
 
+pub struct InitializeData {
+    pub barrier: tokio::sync::Barrier,
+    pub iterations: u16,
+}
 /// Initialize transition that creates a single token if none of the watched places have one.
 ///  
 /// Note: also takes currently taken tokens into account
@@ -18,10 +22,9 @@ pub struct Initialize {
     pl_ids: Vec<PlaceId>, // all the places to check
     tr_id: TransitionId,  // id of the transition in the petri net
     finished: bool,
-    sender: tokio::sync::mpsc::Sender<()>,
+    init_data: Arc<dyn Any + Sync + Send>,
 }
 
-pub const NUM_ITERATIONS: u16 = 100;
 impl TransitionExecutor for Initialize {
     fn validate(ctx: &impl petri_etcd_runner::transition::ValidateContext) -> ValidationResult
     where
@@ -45,14 +48,8 @@ impl TransitionExecutor for Initialize {
         let pl_out = ctx.arcs_out().next().unwrap().place_context().place_id();
         let pl_ids = ctx.arcs_in().map(|actx| actx.place_context().place_id()).collect();
 
-        let data = ctx.registry_data().expect("Missing data for transition");
-        let value_any = (&*data) as &dyn Any;
-        let sender = value_any
-            .downcast_ref::<tokio::sync::mpsc::Sender<()>>()
-            .expect("Data has wrong type")
-            .clone();
-
-        Initialize { pl_out, pl_ids, tr_id: ctx.transition_id(), finished: false, sender }
+        let init_data = ctx.registry_data().expect("Missing data for transition");
+        Initialize { pl_out, pl_ids, tr_id: ctx.transition_id(), finished: false, init_data }
     }
 
     fn check_start(
@@ -84,13 +81,16 @@ impl TransitionExecutor for Initialize {
 
     async fn run(&mut self, _: &mut impl petri_etcd_runner::transition::RunContext) -> RunResult {
         let mut result = RunResult::build();
+        let init_data =
+            self.init_data.downcast_ref::<InitializeData>().expect("Data has wrong type");
         if self.finished {
             // we are done with that token
-            let _ = self.sender.send(()).await;
+            let _ = init_data.barrier.wait().await;
         } else {
             // place a single newly created token on the output place
+            let _ = init_data.barrier.wait().await;
             let mut result_data: Vec<u8> = vec![];
-            result_data.write_u16::<LE>(NUM_ITERATIONS).expect("failed to read number");
+            result_data.write_u16::<LE>(init_data.iterations).expect("failed to read number");
             result.place_new(self.pl_out, result_data);
             self.finished = true;
         }

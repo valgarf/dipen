@@ -1,4 +1,7 @@
+use std::any::Any;
 use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant;
 
 use criterion::criterion_group;
 use criterion::criterion_main;
@@ -13,6 +16,7 @@ use petri_etcd_runner::runner::ExecutorRegistry;
 use petri_etcd_runner::ETCDConfigBuilder;
 use petri_etcd_runner::ETCDGate;
 use tokio::runtime::Runtime;
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::error;
 use tracing::info;
@@ -21,12 +25,15 @@ use tracing::warn;
 #[path = "common/mod.rs"]
 mod common;
 
-async fn run_benchmark(size: u64) {
+async fn run_benchmark(size: u64, iterations: u16) -> Duration {
+    let (tx, mut rx) = tokio::sync::oneshot::channel();
     let run = async move {
         let mut net = PetriNetBuilder::default();
         let mut executors = ExecutorRegistry::new();
+        let barrier = tokio::sync::Barrier::new((size + 1) as usize);
+        let init_data = Arc::new(common::transitions::InitializeData { barrier, iterations });
+        let any_data = init_data.clone() as Arc<dyn Any + Send + Sync>;
 
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<()>((size) as usize);
         for i in 1..=size {
             let pl1 = format!("pl{i}-1");
             let pl2 = format!("pl{i}-2");
@@ -44,10 +51,10 @@ async fn run_benchmark(size: u64) {
             net.insert_transition(net::Transition::new(&tr_init, "region-1"))?;
             net.insert_arc(net::Arc::new(&pl1, &tr_init, net::ArcVariant::InOut, "".into()))?;
             net.insert_arc(net::Arc::new(&pl2, &tr_init, net::ArcVariant::In, "".into()))?;
-            executors.register::<common::transitions::Move>(&tr1, Some(Arc::new(tx.clone())));
-            executors.register::<common::transitions::Move>(&tr2, Some(Arc::new(tx.clone())));
+            executors.register::<common::transitions::Move>(&tr1, None);
+            executors.register::<common::transitions::Move>(&tr2, None);
             executors
-                .register::<common::transitions::Initialize>(&tr_init, Some(Arc::new(tx.clone())));
+                .register::<common::transitions::Initialize>(&tr_init, Some(Arc::clone(&any_data)));
         }
         let shutdown_token = CancellationToken::new();
         let net = Arc::new(net);
@@ -65,26 +72,36 @@ async fn run_benchmark(size: u64) {
             executors,
             shutdown_token.clone(),
         );
-        let join_handle = tokio::spawn(async {
+        let mut join_set = JoinSet::new();
+
+        join_set.spawn(async {
             match run.await {
                 Ok(_) => {
-                    info!("Run1 finished");
+                    info!("Run finished");
                 }
                 Err(err) => {
-                    error!("Run1 finished with: {}", err);
+                    error!("Run finished with: {}", err);
                 }
             }
         });
-        for _ in 1..=size {
-            rx.recv().await;
-        }
-        shutdown_token.cancel();
-        join_handle.await.expect("Failed waiting for benchmark run");
+
+        join_set.spawn(async move {
+            warn!(" ## Waiting for start ({} iters)", init_data.iterations);
+            init_data.barrier.wait().await;
+            let start = Instant::now();
+            warn!(" ## Started");
+            init_data.barrier.wait().await;
+            let _ = tx.send(start.elapsed());
+            warn!(" ## Finished");
+            shutdown_token.cancel();
+        });
+        join_set.join_all().await;
         Ok::<(), PetriError>(())
     };
 
     run.await.expect("Benchmark failed");
-    // println!("\n # single run");
+    warn!(" ## finished single run");
+    rx.try_recv().expect("Should have a result!")
 }
 
 fn benchmark_single_node(c: &mut Criterion) {
@@ -97,20 +114,20 @@ fn benchmark_single_node(c: &mut Criterion) {
         .compact()
         .with_env_filter(
             // tracing_subscriber::EnvFilter::try_new("info,petri_etcd_runner=debug").unwrap(),
-            tracing_subscriber::EnvFilter::try_new("error,petri_etcd_runner=error").unwrap(),
+            tracing_subscriber::EnvFilter::try_new("warn").unwrap(),
+            // tracing_subscriber::EnvFilter::try_new("error").unwrap(),
         )
         .init();
 
     let rt = Runtime::new().expect("Failed to create tokio runtime");
     let mut group = c.benchmark_group("single_node");
     for &num_nets in [1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128].iter() {
-        group.throughput(Throughput::Elements(
-            num_nets * common::transitions::NUM_ITERATIONS as u64,
-        ));
-        group.sampling_mode(SamplingMode::Flat);
-        group.sample_size(10);
+        group.throughput(Throughput::Elements(num_nets));
+        group.sampling_mode(SamplingMode::Linear);
+        group.sample_size(15);
+        group.measurement_time(Duration::from_secs(120));
         group.bench_with_input(BenchmarkId::new("single-node", num_nets), &num_nets, |b, &size| {
-            b.to_async(&rt).iter(|| run_benchmark(size));
+            b.to_async(&rt).iter_custom(|iters| run_benchmark(size, iters as u16));
         });
     }
     group.finish();
