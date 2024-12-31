@@ -1,5 +1,7 @@
 use std::{
+    any::Any,
     collections::{HashMap, HashSet},
+    sync::Arc,
     time::Duration,
 };
 
@@ -85,6 +87,7 @@ pub trait CreateContext {
     fn arcs_by_place_name(&self, name: &str) -> impl Iterator<Item = impl CreateArcContext> {
         self.arcs().filter(move |a| a.place_context().place_name() == name)
     }
+    fn registry_data(&self) -> Option<Arc<dyn Any + Send + Sync>>;
 }
 
 pub trait StartTokenContext {
@@ -113,15 +116,15 @@ pub trait StartContext {
     ) -> impl Iterator<Item = impl StartTakenTokenContext>;
 }
 
-pub trait RunTokenContext {
+pub trait RunTokenContext: Send + Sync {
     fn token_id(&self) -> TokenId;
 
     fn data(&self) -> &[u8];
 
     fn orig_place_id(&self) -> PlaceId;
 }
-pub trait RunContext: Send {
-    fn tokens(&self) -> impl Iterator<Item = &impl RunTokenContext>;
+pub trait RunContext: Send + Sync {
+    fn tokens(&self) -> impl Iterator<Item = &impl RunTokenContext> + Send + Sync;
 }
 
 #[derive(Default)]
@@ -241,5 +244,5 @@ pub trait TransitionExecutor {
     fn run(
         &mut self,
         ctx: &mut impl RunContext,
-    ) -> impl std::future::Future<Output = RunResult> + Send;
+    ) -> impl std::future::Future<Output = RunResult> + Send + Sync;
 }

@@ -182,10 +182,10 @@ async fn playground() -> PetriResult<()> {
     net.insert_transition(Transition::new("tr-init", "test-region-1"))?;
     net.insert_arc(net::Arc::new("pl1", "tr-init", ArcVariant::OutCond, "".into()))?;
     net.insert_arc(net::Arc::new("pl2", "tr-init", ArcVariant::Cond, "".into()))?;
-    executors1.register::<SimpleTrans>("tr1");
-    executors1.register::<SimpleTrans>("tr2");
-    executors2.register::<SimpleTrans>("tr2");
-    executors1.register::<InitializeTrans>("tr-init");
+    executors1.register::<SimpleTrans>("tr1", None);
+    executors1.register::<SimpleTrans>("tr2", None);
+    executors2.register::<SimpleTrans>("tr2", None);
+    executors1.register::<InitializeTrans>("tr-init", None);
 
     // for i in 1..65 {
     //     let pl1 = format!("pl{i}-1");

@@ -59,7 +59,7 @@ fn _data_as_string(data: &[u8], max_len: usize) -> String {
         graphemes[max_len - 3] = ".";
     }
 
-    graphemes.concat().into()
+    graphemes.concat()
 }
 
 impl Display for NetChange {

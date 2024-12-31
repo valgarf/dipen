@@ -1,11 +1,12 @@
 use futures::future::select_all;
 use futures::FutureExt;
+use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::select;
-use tokio::sync::{MutexGuard, RwLock, RwLockReadGuard};
+use tokio::sync::{MutexGuard, RwLock};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, trace};
 
@@ -14,7 +15,7 @@ use crate::net::{self, PetriNet, PlaceId, TokenId, TransitionId};
 use crate::place_locks::{PlaceLock, PlaceLockData};
 use crate::transition::{
     CheckStartChoice, CheckStartResult, CreateArcContext, CreateContext, CreatePlaceContext,
-    RunContext, RunResult, RunResultBuilder, RunTokenContext, StartContext, StartTakenTokenContext,
+    RunContext, RunResult, RunTokenContext, StartContext, StartTakenTokenContext,
     StartTokenContext, TransitionExecutor, ValidateArcContext, ValidateContext,
     ValidatePlaceContext, ValidationResult,
 };
@@ -96,6 +97,7 @@ pub(crate) struct CreateContextStruct<'a> {
     pub(crate) transition_name: &'a str,
     pub(crate) transition_id: TransitionId,
     pub(crate) arcs: Vec<(PlaceId, &'a net::Arc)>,
+    pub(crate) registry_data: Option<Arc<dyn Any + Send + Sync>>,
 }
 struct CreateArcContextStruct<'a> {
     arc: &'a net::Arc,
@@ -122,6 +124,10 @@ impl<'a> CreateContext for CreateContextStruct<'a> {
             place: self.net.places().get(&pl_id).unwrap(),
             place_id: pl_id,
         })
+    }
+
+    fn registry_data(&self) -> Option<Arc<dyn Any + Send + Sync>> {
+        self.registry_data.clone()
     }
 }
 
@@ -271,7 +277,7 @@ impl RunTokenContext for RunTokenContextStruct {
 pub trait TransitionExecutorDispatch: Send + Sync {
     fn clone_empty(&self) -> Box<dyn TransitionExecutorDispatch>;
     fn validate(&self, ctx: &ValidateContextStruct) -> ValidationResult;
-    fn create(&mut self, ctx: &CreateContextStruct);
+    fn create(&mut self, ctx: CreateContextStruct);
     fn check_start(&mut self, ctx: &mut StartContextStruct) -> CheckStartResult;
     fn run<'a, 'b>(
         &'a mut self,
@@ -282,20 +288,22 @@ pub trait TransitionExecutorDispatch: Send + Sync {
 }
 pub(crate) struct TransitionExecutorDispatchStruct<T: TransitionExecutor> {
     pub(crate) executor: Option<T>,
+    pub(crate) data: Option<Arc<dyn Any + Send + Sync>>,
 }
 
 impl<T: TransitionExecutor + Send + Sync + 'static> TransitionExecutorDispatch
     for TransitionExecutorDispatchStruct<T>
 {
     fn clone_empty(&self) -> Box<dyn TransitionExecutorDispatch> {
-        Box::new(Self { executor: None })
+        Box::new(Self { executor: None, data: self.data.clone() })
     }
     fn validate(&self, ctx: &ValidateContextStruct) -> ValidationResult {
         T::validate(ctx)
     }
 
-    fn create(&mut self, ctx: &CreateContextStruct) {
-        self.executor = Some(T::new(ctx));
+    fn create(&mut self, mut ctx: CreateContextStruct) {
+        ctx.registry_data = self.data.clone();
+        self.executor = Some(T::new(&ctx));
     }
 
     fn check_start(&mut self, ctx: &mut StartContextStruct) -> CheckStartResult {
@@ -409,8 +417,9 @@ impl TransitionRunner {
                 .filter(|(&(_, tr_id), _)| tr_id == self.transition_id)
                 .map(|(&(pl_id, _), arc)| (pl_id, arc))
                 .collect(),
+            registry_data: None, // will be replaced by the dispatcher
         };
-        self.exec.create(&ctx);
+        self.exec.create(ctx);
     }
 
     async fn _cancel_running(&mut self) -> Result<()> {

@@ -394,8 +394,17 @@ impl ETCDGate {
         // our side, but we have not acquired any locks at this point.
         let cancel_token = self._cancel_token()?;
         cancelable_send!(tx, initial_event, cancel_token, "Net event change receiver")?;
-        for evt in evts {
-            cancelable_send!(tx, evt, cancel_token, "Net event change receiver")?;
+        if evts.is_empty() {
+            // Note: net waits for data loading. If this is the first run for this net, there might
+            // not be any data to load. We send an empty event with revision 1.
+            // The etcd cluster should always be at revision 1 at this point. Assigning ids to the
+            // transitions requires revisions.
+            let start_event = NetChangeEvent::new(1);
+            cancelable_send!(tx, start_event, cancel_token, "Net event change receiver")?;
+        } else {
+            for evt in evts {
+                cancelable_send!(tx, evt, cancel_token, "Net event change receiver")?;
+            }
         }
 
         Ok(revision)

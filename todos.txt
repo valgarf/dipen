@@ -1,9 +1,12 @@
-- cancel running transitions on start
+- fix benchmarks (1s delay at end?)
+- rename (dipen)
 - store arcs for transition / place on net (BTree with transition id first?)
 - python bindings
 - tests (with multiprocessing?)
 - visualization
 - mark running transitions?
+- human readable reasoning for not firing?
 - store 'last_changed', 'last_start_firing', 'last_finished_firing', etc. time from local time?
-- statistics (transitions / s, how often each was fired?)
+    -> startup time for initial load?
 - remove transitions from own region on etcd, if not in configuration?
+- statistics (transitions / s, how often each was fired?)

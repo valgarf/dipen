@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::select;
@@ -23,11 +24,11 @@ pub struct ExecutorRegistry {
 
 impl ExecutorRegistry {
     pub fn new() -> Self {Self::default()}
-    pub fn register<T: TransitionExecutor + Send + Sync + 'static>(&mut self, transition_name: &str) {
+    pub fn register<T: TransitionExecutor + Send + Sync + 'static>(&mut self, transition_name: &str, data: Option<Arc<dyn Any + Send + Sync>>) {
         self.dispatcher.insert(
             transition_name.into(), 
             Box::new(
-                TransitionExecutorDispatchStruct::<T>{executor: None}
+                TransitionExecutorDispatchStruct::<T>{executor: None, data}
             )
         );
     }
