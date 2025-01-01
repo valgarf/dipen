@@ -211,7 +211,7 @@ async fn playground() -> PetriResult<()> {
     let net = Arc::new(net);
     let config = ETCDConfigBuilder::default()
         .endpoints(["localhost:2379"])
-        .prefix("/petri-test/")
+        .prefix("petri-test/")
         .node_name("node1")
         .region("test-region-1")
         .lease_id(102)
@@ -223,7 +223,7 @@ async fn playground() -> PetriResult<()> {
 
     // let config = ETCDConfigBuilder::default()
     //     .endpoints(["localhost:2379"])
-    //     .prefix("/petri-test/")
+    //     .prefix("petri-test/")
     //     .node_name("node2")
     //     .region("test-region-2")
     //     .build()?;

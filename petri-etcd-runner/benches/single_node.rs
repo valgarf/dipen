@@ -1,4 +1,5 @@
 use std::any::Any;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -60,7 +61,7 @@ async fn run_benchmark(size: u64, iterations: u16) -> Duration {
         let net = Arc::new(net);
         let config = ETCDConfigBuilder::default()
             .endpoints(["localhost:2379"])
-            .prefix("/bench-single-node/")
+            .prefix("bench-single-node/")
             .node_name("node1")
             .region("region-1")
             .build()?;
@@ -89,6 +90,8 @@ async fn run_benchmark(size: u64, iterations: u16) -> Duration {
             warn!(" ## Waiting for start ({} iters)", init_data.iterations);
             init_data.barrier.wait().await;
             let start = Instant::now();
+            common::transitions::EXECUTION_COUNT.store(0, Ordering::SeqCst);
+            init_data.barrier.wait().await;
             warn!(" ## Started");
             init_data.barrier.wait().await;
             let _ = tx.send(start.elapsed());
@@ -100,7 +103,14 @@ async fn run_benchmark(size: u64, iterations: u16) -> Duration {
     };
 
     run.await.expect("Benchmark failed");
-    warn!(" ## finished single run");
+    let count = common::transitions::EXECUTION_COUNT.load(Ordering::SeqCst) as u64;
+    let expected = size * iterations as u64;
+    if count != expected {
+        error!("Wrong count! expected: {}, actual: {}", expected, count);
+        panic!("Bechmark is broken.")
+    } else {
+        warn!(" ## finished single run. Execution count expected: {}, actual: {}", expected, count);
+    }
     rx.try_recv().expect("Should have a result!")
 }
 
@@ -114,8 +124,8 @@ fn benchmark_single_node(c: &mut Criterion) {
         .compact()
         .with_env_filter(
             // tracing_subscriber::EnvFilter::try_new("info,petri_etcd_runner=debug").unwrap(),
-            tracing_subscriber::EnvFilter::try_new("warn").unwrap(),
-            // tracing_subscriber::EnvFilter::try_new("error").unwrap(),
+            // tracing_subscriber::EnvFilter::try_new("warn").unwrap(),
+            tracing_subscriber::EnvFilter::try_new("error").unwrap(),
         )
         .init();
 

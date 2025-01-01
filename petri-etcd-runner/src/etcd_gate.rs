@@ -363,10 +363,7 @@ impl ETCDGate {
         // query all data for the initial event
         let mut kv_client = self._client_mut()?.kv_client();
         let resp = kv_client
-            .get(
-                self.config.prefix.clone() + "pl/",
-                Some(GetOptions::new().with_prefix().with_serializable()),
-            )
+            .get(self.config.prefix.clone() + "pl/", Some(GetOptions::new().with_prefix()))
             .await?;
         let header =
             resp.header().ok_or(PetriError::Other("header missing from etcd reply.".into()))?;

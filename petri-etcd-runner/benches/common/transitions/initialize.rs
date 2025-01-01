@@ -1,6 +1,5 @@
-use std::{any::Any, sync::Arc};
+use std::{any::Any, str::from_utf8, sync::Arc};
 
-use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 use petri_etcd_runner::{
     net::{PlaceId, TransitionId},
     transition::{
@@ -8,7 +7,7 @@ use petri_etcd_runner::{
         TransitionExecutor, ValidationResult,
     },
 };
-use tracing::info;
+use tracing::{error, info};
 
 pub struct InitializeData {
     pub barrier: tokio::sync::Barrier,
@@ -23,6 +22,15 @@ pub struct Initialize {
     tr_id: TransitionId,  // id of the transition in the petri net
     finished: bool,
     init_data: Arc<dyn Any + Sync + Send>,
+}
+
+// // For better readability encode / decode to string:
+pub fn encode(remaining_iterations: u16) -> Vec<u8> {
+    remaining_iterations.to_string().as_bytes().into()
+}
+
+pub fn decode(data: &[u8]) -> u16 {
+    from_utf8(data).expect("Failed to decode number").parse().expect("Failed to decode number")
 }
 
 impl TransitionExecutor for Initialize {
@@ -61,10 +69,20 @@ impl TransitionExecutor for Initialize {
         let mut result = CheckStartResult::build();
         // NOTE: the check_start function should not depend on internal state for production
         // code! This is a hack for benchmarking!
+        let token_count = self
+            .pl_ids
+            .iter()
+            .map(|&pl_id| ctx.tokens_at(pl_id).count() + ctx.taken_tokens_at(pl_id).count())
+            .sum::<usize>();
+        if token_count > 1 {
+            error!("There should be only one token at most!");
+            panic!("There should be only one token at most!")
+        }
+
         for &pl_in in &self.pl_ids {
             let next_token = ctx.tokens_at(pl_in).next();
             if let Some(to) = next_token {
-                if to.data().read_u16::<LE>().expect("failed to read number") == 0 {
+                if decode(to.data()) == 0 {
                     // found an empty token, take it and create a new one instead.
                     result.take(&to);
                     return result.enabled();
@@ -74,24 +92,34 @@ impl TransitionExecutor for Initialize {
                 }
             }
         }
+        for &pl_in in &self.pl_ids {
+            if ctx.taken_tokens_at(pl_in).next().is_some() {
+                return result.disabled(None, None);
+            }
+        }
 
+        if token_count > 0 {
+            error!("WTF?!?");
+        }
         // no token found, run this transition
         result.enabled()
     }
 
-    async fn run(&mut self, _: &mut impl petri_etcd_runner::transition::RunContext) -> RunResult {
+    async fn run(&mut self, ctx: &mut impl petri_etcd_runner::transition::RunContext) -> RunResult {
         let mut result = RunResult::build();
         let init_data =
             self.init_data.downcast_ref::<InitializeData>().expect("Data has wrong type");
         if self.finished {
             // we are done with that token
+            info!("Finished, trying to delete {} tokens", ctx.tokens().count());
             let _ = init_data.barrier.wait().await;
         } else {
+            info!("Creating a new token, deleting {} tokens", ctx.tokens().count());
             // place a single newly created token on the output place
             let _ = init_data.barrier.wait().await;
-            let mut result_data: Vec<u8> = vec![];
-            result_data.write_u16::<LE>(init_data.iterations).expect("failed to read number");
-            result.place_new(self.pl_out, result_data);
+            // start time is measured by the main thread at this point
+            let _ = init_data.barrier.wait().await;
+            result.place_new(self.pl_out, encode(init_data.iterations));
             self.finished = true;
         }
         result.result()

@@ -54,7 +54,7 @@ async fn run() -> PetriResult<()> {
     let net = Arc::new(net);
     let config = ETCDConfigBuilder::default()
         .endpoints(["localhost:2379"])
-        .prefix("/02-split-loop/")
+        .prefix("02-split-loop/")
         .node_name("node1")
         .region("region-1")
         .build()?;
@@ -66,7 +66,7 @@ async fn run() -> PetriResult<()> {
     let net = Arc::new(net);
     let config = ETCDConfigBuilder::default()
         .endpoints(["localhost:2379"])
-        .prefix("/02-split-loop/")
+        .prefix("02-split-loop/")
         .node_name("node2")
         .region("region-2")
         .build()?;

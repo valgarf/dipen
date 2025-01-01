@@ -384,6 +384,9 @@ impl TransitionRunner {
             let mut finish_locks = self._target_place_locks(&res).await;
             let guards = TransitionRunner::_lock(&mut finish_locks, None).await?;
             let fencing_tokens = TransitionRunner::_get_fencing_tokens(&guards);
+            // Note: we need to wait until the take revision has been applied, otherwise we may
+            // forget to destroy a taken token during `_finish_transition`
+            TransitionRunner::_wait_for_revision(&mut self.rx_revision, revision).await?;
             let new_revision = self._finish_transition(res, fencing_tokens).await?;
             TransitionRunner::_release_locks(guards, new_revision);
 
@@ -448,7 +451,8 @@ impl TransitionRunner {
             let mut finish_locks = self._target_place_locks(&res).await;
             let guards = TransitionRunner::_lock(&mut finish_locks, None).await?;
             let fencing_tokens = TransitionRunner::_get_fencing_tokens(&guards);
-            self._finish_transition(res, fencing_tokens).await?;
+            let rev = self._finish_transition(res, fencing_tokens).await?;
+            TransitionRunner::_wait_for_revision(&mut self.rx_revision, rev).await?;
         }
         Ok(())
     }

@@ -1,4 +1,5 @@
-use byteorder::{ReadBytesExt, WriteBytesExt, LE};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use petri_etcd_runner::{
     net::{PlaceId, TransitionId},
     transition::{
@@ -7,12 +8,16 @@ use petri_etcd_runner::{
     },
 };
 
+use super::initialize::{decode, encode};
+
 pub struct Move {
     pl_in: PlaceId,
     pl_out: PlaceId,
     tr_id: TransitionId,
     tr_name: String,
 }
+
+pub static EXECUTION_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 impl TransitionExecutor for Move {
     fn validate(ctx: &impl petri_etcd_runner::transition::ValidateContext) -> ValidationResult
@@ -41,11 +46,12 @@ impl TransitionExecutor for Move {
         &mut self,
         ctx: &mut impl petri_etcd_runner::transition::StartContext,
     ) -> CheckStartResult {
+        // info!("Check start of move transition ({})", self.tr_id.0);
         let next_token = ctx.tokens_at(self.pl_in).next();
         let mut result = CheckStartResult::build();
         match next_token {
             Some(to) => {
-                if to.data().read_u16::<LE>().expect("failed to read number") == 0 {
+                if decode(to.data()) == 0 {
                     result.disabled(Some(self.pl_in), None)
                 } else {
                     result.take(&to);
@@ -57,14 +63,12 @@ impl TransitionExecutor for Move {
     }
 
     async fn run(&mut self, ctx: &mut impl petri_etcd_runner::transition::RunContext) -> RunResult {
+        EXECUTION_COUNT.fetch_add(1, Ordering::SeqCst);
         let mut result = RunResult::build();
         for to in ctx.tokens() {
             result.place(to, self.pl_out);
-            let num = to.data().read_u16::<LE>().expect("failed to read number");
-            let mut result_data = vec![];
-            result_data.write_u16::<LE>(num - 1).expect("failed to write number");
-
-            result.update(to, result_data);
+            let num = decode(to.data());
+            result.update(to, encode(num - 1));
         }
         result.result()
     }

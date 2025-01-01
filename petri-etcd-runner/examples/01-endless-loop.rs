@@ -53,7 +53,7 @@ async fn run() -> PetriResult<()> {
     let net = Arc::new(net);
     let config = ETCDConfigBuilder::default()
         .endpoints(["localhost:2379"])
-        .prefix("/01-endless-loop/")
+        .prefix("01-endless-loop/")
         .node_name("node1")
         .region("region-1")
         .build()?;
