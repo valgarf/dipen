@@ -11,14 +11,14 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, trace};
 
 use crate::error::{PetriError, Result};
-use crate::net::{self, PetriNet, PlaceId, TokenId, TransitionId};
-use crate::place_locks::{PlaceLock, PlaceLockData};
-use crate::transition::{
+use crate::exec::{
     CheckStartChoice, CheckStartResult, CreateArcContext, CreateContext, CreatePlaceContext,
-    RunContext, RunResult, RunTokenContext, StartContext, StartTakenTokenContext,
+    RunContext, RunResult, RunResultData, RunTokenContext, StartContext, StartTakenTokenContext,
     StartTokenContext, TransitionExecutor, ValidateArcContext, ValidateContext,
     ValidatePlaceContext, ValidationResult,
 };
+use crate::net::{self, PetriNet, PlaceId, TokenId, TransitionId};
+use crate::place_locks::{PlaceLock, PlaceLockData};
 use crate::ETCDTransitionGate;
 
 pub(crate) struct TransitionRunner {
@@ -63,7 +63,7 @@ impl<'a> ValidateContext for ValidateContextStruct<'a> {
         self.transition_name
     }
 
-    fn arcs(&self) -> impl Iterator<Item = impl crate::transition::ValidateArcContext> {
+    fn arcs(&self) -> impl Iterator<Item = impl crate::exec::ValidateArcContext> {
         self.arcs.iter().map(|arc| ValidateArcContextStruct {
             arc,
             place: self.net.places().get(arc.place()).unwrap(),
@@ -80,7 +80,7 @@ impl<'a> ValidateArcContext for ValidateArcContextStruct<'a> {
         self.arc.variant()
     }
 
-    fn place_context(&self) -> impl crate::transition::ValidatePlaceContext {
+    fn place_context(&self) -> impl crate::exec::ValidatePlaceContext {
         ValidatePlaceContextStruct { place: self.place }
     }
 }
@@ -118,7 +118,7 @@ impl<'a> CreateContext for CreateContextStruct<'a> {
         self.transition_id
     }
 
-    fn arcs(&self) -> impl Iterator<Item = impl crate::transition::CreateArcContext> {
+    fn arcs(&self) -> impl Iterator<Item = impl crate::exec::CreateArcContext> {
         self.arcs.iter().map(|&(pl_id, arc)| CreateArcContextStruct {
             arc,
             place: self.net.places().get(&pl_id).unwrap(),
@@ -140,7 +140,7 @@ impl<'a> CreateArcContext for CreateArcContextStruct<'a> {
         self.arc.variant()
     }
 
-    fn place_context(&self) -> impl crate::transition::CreatePlaceContext {
+    fn place_context(&self) -> impl crate::exec::CreatePlaceContext {
         CreatePlaceContextStruct { place: self.place, place_id: self.place_id }
     }
 }
@@ -183,7 +183,7 @@ impl<'a> StartContext for StartContextStruct<'a> {
     fn tokens_at(
         &self,
         place_id: PlaceId,
-    ) -> impl Iterator<Item = impl crate::transition::StartTokenContext> {
+    ) -> impl Iterator<Item = impl crate::exec::StartTokenContext> {
         let net = self.net;
         net.places()
             .get(&place_id)
@@ -196,7 +196,7 @@ impl<'a> StartContext for StartContextStruct<'a> {
     fn taken_tokens_at(
         &self,
         place_id: PlaceId,
-    ) -> impl Iterator<Item = impl crate::transition::StartTakenTokenContext> {
+    ) -> impl Iterator<Item = impl crate::exec::StartTakenTokenContext> {
         let net = self.net;
         net.places().get(&place_id).unwrap().taken_token_ids().iter().map(
             move |(&token_id, &transition_id)| StartTakenTokenContextStruct {
@@ -254,7 +254,7 @@ pub(crate) struct RunTokenContextStruct {
 }
 
 impl RunContext for RunContextStruct {
-    fn tokens(&self) -> impl Iterator<Item = &impl crate::transition::RunTokenContext> {
+    fn tokens(&self) -> impl Iterator<Item = &impl crate::exec::RunTokenContext> {
         self.tokens.iter()
     }
 }
@@ -377,7 +377,7 @@ impl TransitionRunner {
             drop(start_locks);
 
             // actually run the transition
-            let res = self._run(&mut ctx).await?;
+            let res: RunResultData = self._run(&mut ctx).await?.into();
 
             // we are done, we need to update the state of the target places, i.e.
             // locking output places and sending an update to etcd
@@ -434,7 +434,7 @@ impl TransitionRunner {
                     .collect::<Vec<String>>()
                     .join(",")
             );
-            let res = RunResult {
+            let res = RunResultData {
                 place: token_ids
                     .iter()
                     .map(|&to_id| {
@@ -497,7 +497,7 @@ impl TransitionRunner {
     async fn _check_start(&mut self) -> Result<Option<Vec<(PlaceId, TokenId)>>> {
         let net = self.net_lock.read().await;
         let mut ctx = StartContextStruct::new(&net);
-        match self.exec.check_start(&mut ctx).choice {
+        match self.exec.check_start(&mut ctx).to_choice() {
             CheckStartChoice::Disabled(data) => {
                 self.run_data.wait_for = data.wait_for;
                 self.run_data.auto_recheck = data.auto_recheck;
@@ -577,7 +577,7 @@ impl TransitionRunner {
         Ok(self.exec.run(ctx).await)
     }
 
-    async fn _target_place_locks(&self, res: &RunResult) -> Vec<Arc<PlaceLock>> {
+    async fn _target_place_locks(&self, res: &RunResultData) -> Vec<Arc<PlaceLock>> {
         // TODO: is it necessary to lock the places we took tokens from?
         // We will be moving / destroying those tokens and the transitions start method's may use
         // their existence to decide wether to start or not.
@@ -600,7 +600,7 @@ impl TransitionRunner {
 
     async fn _finish_transition(
         &mut self,
-        res: RunResult,
+        res: RunResultData,
         taken: &[(PlaceId, TokenId)],
         fencing_tokens: Vec<&Vec<u8>>,
     ) -> Result<u64> {

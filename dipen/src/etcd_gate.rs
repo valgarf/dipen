@@ -632,7 +632,7 @@ impl ETCDGate {
                 } else if let Some((place2_id, transition_id)) = released.remove(&token_id) {
                     check_place_match!(place_id, place2_id, token_id, change_evt.revision)?;
                     // case (B2)
-                    change_evt.changes.push(NetChange::Update(token_id, transition_id, data));
+                    change_evt.changes.push(NetChange::Update(transition_id, token_id, data));
                     change_evt.changes.push(NetChange::Place(place_id, transition_id, token_id));
                 } else {
                     // case (B3)
@@ -656,7 +656,7 @@ impl ETCDGate {
                     (Some(transition_id), Some((pl_created, data_created))) => {
                         // case (C1)
                         if data_destroyed != data_created {
-                            let c = NetChange::Update(token_id, transition_id, data_created);
+                            let c = NetChange::Update(transition_id, token_id, data_created);
                             change_evt.changes.push(c);
                         }
                         let c = NetChange::Place(pl_created, transition_id, token_id);

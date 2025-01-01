@@ -10,7 +10,7 @@ use tracing::{debug, trace, warn};
 use crate::error::{PetriError, Result};
 use crate::net::{ArcVariant, NetChangeEvent, PetriNet, PetriNetBuilder, PlaceId, TransitionId};
 use crate::place_locks::PlaceLock;
-use crate::transition::TransitionExecutor;
+use crate::exec::TransitionExecutor;
 use crate::transition_runner::{TransitionExecutorDispatch, TransitionExecutorDispatchStruct, TransitionRunner, ValidateContextStruct};
 use crate::ETCDGate;
 
@@ -62,8 +62,8 @@ pub async fn run(
         };
         if let Some(exec) = executors.dispatcher.get(tr_name) {
             let res = exec.validate(&ctx);
-            if !res.success {
-                return Err(PetriError::ConfigError(format!("Validation for transition {} failed with reason: {}.", tr_name, res.reason)));
+            if let Some(reason) = res.reason() {
+                return Err(PetriError::ConfigError(format!("Validation for transition {} failed with reason: {}.", tr_name, reason)));
             }
         }
         else {

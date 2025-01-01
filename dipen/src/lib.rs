@@ -1,9 +1,9 @@
 pub mod error;
 mod etcd_gate;
+pub mod exec;
 pub mod net;
 mod place_locks;
 pub mod runner;
-pub mod transition;
 mod transition_runner;
 
 pub use etcd_gate::{

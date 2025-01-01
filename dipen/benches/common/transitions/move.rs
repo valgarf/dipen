@@ -1,11 +1,11 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use dipen::{
-    net::{PlaceId, TransitionId},
-    transition::{
+    exec::{
         CheckStartResult, CreateArcContext, CreatePlaceContext, RunResult, RunTokenContext,
         StartTokenContext, TransitionExecutor, ValidationResult,
     },
+    net::{PlaceId, TransitionId},
 };
 
 use super::initialize::{decode, encode};
@@ -20,18 +20,18 @@ pub struct Move {
 pub static EXECUTION_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 impl TransitionExecutor for Move {
-    fn validate(ctx: &impl dipen::transition::ValidateContext) -> ValidationResult
+    fn validate(ctx: &impl dipen::exec::ValidateContext) -> ValidationResult
     where
         Self: Sized,
     {
         if ctx.arcs_in().count() == 1 && ctx.arcs_out().count() == 1 {
-            ValidationResult::success()
+            ValidationResult::succeeded()
         } else {
-            ValidationResult::failure("Need exactly one incoming and one outgoing arc")
+            ValidationResult::failed("Need exactly one incoming and one outgoing arc")
         }
     }
 
-    fn new(ctx: &impl dipen::transition::CreateContext) -> Self
+    fn new(ctx: &impl dipen::exec::CreateContext) -> Self
     where
         Self: Sized,
     {
@@ -42,10 +42,7 @@ impl TransitionExecutor for Move {
         Move { pl_in, pl_out, tr_id: ctx.transition_id(), tr_name }
     }
 
-    fn check_start(
-        &mut self,
-        ctx: &mut impl dipen::transition::StartContext,
-    ) -> CheckStartResult {
+    fn check_start(&mut self, ctx: &mut impl dipen::exec::StartContext) -> CheckStartResult {
         // info!("Check start of move transition ({})", self.tr_id.0);
         let next_token = ctx.tokens_at(self.pl_in).next();
         let mut result = CheckStartResult::build();
@@ -62,7 +59,7 @@ impl TransitionExecutor for Move {
         }
     }
 
-    async fn run(&mut self, ctx: &mut impl dipen::transition::RunContext) -> RunResult {
+    async fn run(&mut self, ctx: &mut impl dipen::exec::RunContext) -> RunResult {
         EXECUTION_COUNT.fetch_add(1, Ordering::SeqCst);
         let mut result = RunResult::build();
         for to in ctx.tokens() {

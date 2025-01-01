@@ -10,7 +10,7 @@ pub enum NetChange {
     Take(PlaceId, TransitionId, TokenId),
     Place(PlaceId, TransitionId, TokenId),
     Delete(PlaceId, TransitionId, TokenId),
-    Update(TokenId, TransitionId, Vec<u8>),
+    Update(TransitionId, TokenId, Vec<u8>),
     Reset(), // delete ALL tokens, for (re)loads
     // external interactions (transitions our code does not know about / manual interactions)
     ExternalPlace(PlaceId, TokenId),
@@ -78,7 +78,7 @@ impl Display for NetChange {
                     token_id.0, transition_id.0, place_id.0,
                 )
             }
-            NetChange::Update(token_id, transition_id, data) => {
+            NetChange::Update(transition_id, token_id, data) => {
                 write!(
                     f,
                     "Update({} at transition {}: '{}')",

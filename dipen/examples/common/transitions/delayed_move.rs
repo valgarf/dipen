@@ -1,11 +1,11 @@
 use std::time::Duration;
 
 use dipen::{
-    net::{PlaceId, TransitionId},
-    transition::{
+    exec::{
         CheckStartResult, CreateArcContext, CreatePlaceContext, RunResult, TransitionExecutor,
         ValidationResult,
     },
+    net::{PlaceId, TransitionId},
 };
 use tracing::info;
 
@@ -18,19 +18,19 @@ pub struct DelayedMove {
 }
 
 impl TransitionExecutor for DelayedMove {
-    fn validate(ctx: &impl dipen::transition::ValidateContext) -> ValidationResult
+    fn validate(ctx: &impl dipen::exec::ValidateContext) -> ValidationResult
     where
         Self: Sized,
     {
         info!("Validating transition {}", ctx.transition_name());
         if ctx.arcs_in().count() == 1 && ctx.arcs_out().count() == 1 {
-            ValidationResult::success()
+            ValidationResult::succeeded()
         } else {
-            ValidationResult::failure("Need exactly one incoming and one outgoing arc")
+            ValidationResult::failed("Need exactly one incoming and one outgoing arc")
         }
     }
 
-    fn new(ctx: &impl dipen::transition::CreateContext) -> Self
+    fn new(ctx: &impl dipen::exec::CreateContext) -> Self
     where
         Self: Sized,
     {
@@ -41,10 +41,7 @@ impl TransitionExecutor for DelayedMove {
         DelayedMove { pl_in, pl_out, tr_id: ctx.transition_id(), tr_name, delete: false }
     }
 
-    fn check_start(
-        &mut self,
-        ctx: &mut impl dipen::transition::StartContext,
-    ) -> CheckStartResult {
+    fn check_start(&mut self, ctx: &mut impl dipen::exec::StartContext) -> CheckStartResult {
         info!("Check start of transition {} ({})", self.tr_name, self.tr_id.0);
         if ctx.tokens_at(self.pl_in).count() >= 3 {
             // if we have too many input tokens, we will delete our token at the end instead of
@@ -63,7 +60,7 @@ impl TransitionExecutor for DelayedMove {
         }
     }
 
-    async fn run(&mut self, ctx: &mut impl dipen::transition::RunContext) -> RunResult {
+    async fn run(&mut self, ctx: &mut impl dipen::exec::RunContext) -> RunResult {
         info!("Running transition {} ({})", self.tr_name, self.tr_id.0);
         tokio::time::sleep(Duration::from_secs(1)).await;
         let mut result = RunResult::build();

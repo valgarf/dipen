@@ -186,7 +186,7 @@ impl PetriNet {
                 self.tokens.remove(&to_id);
                 modified.insert(pl_id);
             }
-            NetChange::Update(to_id, tr_id, data) => {
+            NetChange::Update(tr_id, to_id, data) => {
                 let to = get_token!(self, to_id)?;
                 assert_state!(
                     to.position == TokenPosition::Transition(tr_id),
