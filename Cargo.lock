@@ -582,6 +582,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "dipen"
+version = "0.1.0"
+dependencies = [
+ "byteorder",
+ "criterion",
+ "derive_builder",
+ "etcd-client",
+ "futures",
+ "plotly",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.7",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "directories"
 version = "5.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1357,38 +1377,6 @@ checksum = "b4c5cc86750666a3ed20bdaf5ca2a0344f9c67674cae0515bec2da16fbaa47db"
 dependencies = [
  "fixedbitset",
  "indexmap 2.7.0",
-]
-
-[[package]]
-name = "petri-etcd-playground"
-version = "0.1.0"
-dependencies = [
- "etcd-client",
- "petri-etcd-runner",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "petri-etcd-runner"
-version = "0.1.0"
-dependencies = [
- "byteorder",
- "criterion",
- "derive_builder",
- "etcd-client",
- "futures",
- "plotly",
- "serde",
- "serde_json",
- "thiserror 2.0.7",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "unicode-segmentation",
 ]
 
 [[package]]

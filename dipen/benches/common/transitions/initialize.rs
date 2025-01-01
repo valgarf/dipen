@@ -1,6 +1,6 @@
 use std::{any::Any, str::from_utf8, sync::Arc};
 
-use petri_etcd_runner::{
+use dipen::{
     net::{PlaceId, TransitionId},
     transition::{
         CheckStartResult, CreateArcContext, CreatePlaceContext, RunResult, StartTokenContext,
@@ -34,7 +34,7 @@ pub fn decode(data: &[u8]) -> u16 {
 }
 
 impl TransitionExecutor for Initialize {
-    fn validate(ctx: &impl petri_etcd_runner::transition::ValidateContext) -> ValidationResult
+    fn validate(ctx: &impl dipen::transition::ValidateContext) -> ValidationResult
     where
         Self: Sized,
     {
@@ -48,7 +48,7 @@ impl TransitionExecutor for Initialize {
         }
     }
 
-    fn new(ctx: &impl petri_etcd_runner::transition::CreateContext) -> Self
+    fn new(ctx: &impl dipen::transition::CreateContext) -> Self
     where
         Self: Sized,
     {
@@ -62,7 +62,7 @@ impl TransitionExecutor for Initialize {
 
     fn check_start(
         &mut self,
-        ctx: &mut impl petri_etcd_runner::transition::StartContext,
+        ctx: &mut impl dipen::transition::StartContext,
     ) -> CheckStartResult {
         info!("Check start of initialize transition ({})", self.tr_id.0);
 
@@ -105,7 +105,7 @@ impl TransitionExecutor for Initialize {
         result.enabled()
     }
 
-    async fn run(&mut self, ctx: &mut impl petri_etcd_runner::transition::RunContext) -> RunResult {
+    async fn run(&mut self, ctx: &mut impl dipen::transition::RunContext) -> RunResult {
         let mut result = RunResult::build();
         let init_data =
             self.init_data.downcast_ref::<InitializeData>().expect("Data has wrong type");

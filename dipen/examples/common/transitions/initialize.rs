@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use petri_etcd_runner::{
+use dipen::{
     net::{PlaceId, TransitionId},
     transition::{
         CheckStartResult, CreateArcContext, CreatePlaceContext, RunResult, TransitionExecutor,
@@ -19,7 +19,7 @@ pub struct Initialize {
 }
 
 impl TransitionExecutor for Initialize {
-    fn validate(ctx: &impl petri_etcd_runner::transition::ValidateContext) -> ValidationResult
+    fn validate(ctx: &impl dipen::transition::ValidateContext) -> ValidationResult
     where
         Self: Sized,
     {
@@ -36,7 +36,7 @@ impl TransitionExecutor for Initialize {
         }
     }
 
-    fn new(ctx: &impl petri_etcd_runner::transition::CreateContext) -> Self
+    fn new(ctx: &impl dipen::transition::CreateContext) -> Self
     where
         Self: Sized,
     {
@@ -48,7 +48,7 @@ impl TransitionExecutor for Initialize {
 
     fn check_start(
         &mut self,
-        ctx: &mut impl petri_etcd_runner::transition::StartContext,
+        ctx: &mut impl dipen::transition::StartContext,
     ) -> CheckStartResult {
         info!("Check start of initialize transition ({})", self.tr_id.0);
 
@@ -68,7 +68,7 @@ impl TransitionExecutor for Initialize {
 
     async fn run(
         &mut self,
-        _ctx: &mut impl petri_etcd_runner::transition::RunContext,
+        _ctx: &mut impl dipen::transition::RunContext,
     ) -> RunResult {
         info!("Running initialize transition ({})", self.tr_id.0);
         tokio::time::sleep(Duration::from_secs(1)).await;

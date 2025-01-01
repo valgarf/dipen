@@ -35,12 +35,12 @@ use criterion::BenchmarkId;
 use criterion::Criterion;
 use criterion::SamplingMode;
 use criterion::Throughput;
-use petri_etcd_runner::error::PetriError;
-use petri_etcd_runner::net;
-use petri_etcd_runner::net::PetriNetBuilder;
-use petri_etcd_runner::runner::ExecutorRegistry;
-use petri_etcd_runner::ETCDConfigBuilder;
-use petri_etcd_runner::ETCDGate;
+use dipen::error::PetriError;
+use dipen::net;
+use dipen::net::PetriNetBuilder;
+use dipen::runner::ExecutorRegistry;
+use dipen::ETCDConfigBuilder;
+use dipen::ETCDGate;
 use tokio::runtime::Runtime;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -93,7 +93,7 @@ async fn run_benchmark(size: u64, iterations: u16) -> Duration {
             .build()?;
 
         let etcd = ETCDGate::new(config);
-        let run = petri_etcd_runner::runner::run(
+        let run = dipen::runner::run(
             Arc::clone(&net),
             etcd,
             executors,
@@ -149,7 +149,7 @@ fn benchmark_single_node(c: &mut Criterion) {
         )
         .compact()
         .with_env_filter(
-            // tracing_subscriber::EnvFilter::try_new("info,petri_etcd_runner=debug").unwrap(),
+            // tracing_subscriber::EnvFilter::try_new("info,dipen=debug").unwrap(),
             // tracing_subscriber::EnvFilter::try_new("warn").unwrap(),
             tracing_subscriber::EnvFilter::try_new("error").unwrap(),
         )

@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use petri_etcd_runner::{
+use dipen::{
     net::{PlaceId, TransitionId},
     transition::{
         CheckStartResult, CreateArcContext, CreatePlaceContext, RunResult, RunTokenContext,
@@ -20,7 +20,7 @@ pub struct Move {
 pub static EXECUTION_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 impl TransitionExecutor for Move {
-    fn validate(ctx: &impl petri_etcd_runner::transition::ValidateContext) -> ValidationResult
+    fn validate(ctx: &impl dipen::transition::ValidateContext) -> ValidationResult
     where
         Self: Sized,
     {
@@ -31,7 +31,7 @@ impl TransitionExecutor for Move {
         }
     }
 
-    fn new(ctx: &impl petri_etcd_runner::transition::CreateContext) -> Self
+    fn new(ctx: &impl dipen::transition::CreateContext) -> Self
     where
         Self: Sized,
     {
@@ -44,7 +44,7 @@ impl TransitionExecutor for Move {
 
     fn check_start(
         &mut self,
-        ctx: &mut impl petri_etcd_runner::transition::StartContext,
+        ctx: &mut impl dipen::transition::StartContext,
     ) -> CheckStartResult {
         // info!("Check start of move transition ({})", self.tr_id.0);
         let next_token = ctx.tokens_at(self.pl_in).next();
@@ -62,7 +62,7 @@ impl TransitionExecutor for Move {
         }
     }
 
-    async fn run(&mut self, ctx: &mut impl petri_etcd_runner::transition::RunContext) -> RunResult {
+    async fn run(&mut self, ctx: &mut impl dipen::transition::RunContext) -> RunResult {
         EXECUTION_COUNT.fetch_add(1, Ordering::SeqCst);
         let mut result = RunResult::build();
         for to in ctx.tokens() {

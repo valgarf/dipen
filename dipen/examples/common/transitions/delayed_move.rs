@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use petri_etcd_runner::{
+use dipen::{
     net::{PlaceId, TransitionId},
     transition::{
         CheckStartResult, CreateArcContext, CreatePlaceContext, RunResult, TransitionExecutor,
@@ -18,7 +18,7 @@ pub struct DelayedMove {
 }
 
 impl TransitionExecutor for DelayedMove {
-    fn validate(ctx: &impl petri_etcd_runner::transition::ValidateContext) -> ValidationResult
+    fn validate(ctx: &impl dipen::transition::ValidateContext) -> ValidationResult
     where
         Self: Sized,
     {
@@ -30,7 +30,7 @@ impl TransitionExecutor for DelayedMove {
         }
     }
 
-    fn new(ctx: &impl petri_etcd_runner::transition::CreateContext) -> Self
+    fn new(ctx: &impl dipen::transition::CreateContext) -> Self
     where
         Self: Sized,
     {
@@ -43,7 +43,7 @@ impl TransitionExecutor for DelayedMove {
 
     fn check_start(
         &mut self,
-        ctx: &mut impl petri_etcd_runner::transition::StartContext,
+        ctx: &mut impl dipen::transition::StartContext,
     ) -> CheckStartResult {
         info!("Check start of transition {} ({})", self.tr_name, self.tr_id.0);
         if ctx.tokens_at(self.pl_in).count() >= 3 {
@@ -63,7 +63,7 @@ impl TransitionExecutor for DelayedMove {
         }
     }
 
-    async fn run(&mut self, ctx: &mut impl petri_etcd_runner::transition::RunContext) -> RunResult {
+    async fn run(&mut self, ctx: &mut impl dipen::transition::RunContext) -> RunResult {
         info!("Running transition {} ({})", self.tr_name, self.tr_id.0);
         tokio::time::sleep(Duration::from_secs(1)).await;
         let mut result = RunResult::build();
