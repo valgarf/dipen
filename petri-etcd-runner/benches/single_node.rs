@@ -1,3 +1,28 @@
+/// Benchmark for a single node with N independent nets
+///
+/// Uses N identical copies of the following net:
+///
+///   tr2 ──► pl1 ◄─► tr-init
+///   ▲       │        ▲    
+///   │       ▼        │    
+///  pl2 ◄── tr1       │    
+///   │                │    
+///   └────────────────┘
+///
+/// tr-init fires in the beginning and places a token on 'pl1' with a number value.
+/// tr1 and tr2 always take this single token, reduce the number by 1 and place it
+/// on their output. When the value is down to 0, tr-init takes the token away again.
+///
+/// Benchmark starts when all the tr-init transitions run for the first time (synchronised with a
+/// barrier). Benchmark ends when the tr-init transitions fire for the second time (synchronized
+/// with a barrier again).
+///
+/// etcd is running locally with a single node. Real deployments would have multiple etcd notes that
+/// need to communicate, so changes would need more time, i.e. a chain of transitions that need to
+/// happen one after the other (as in the example net) are likely much slower.
+/// Furthermore, real transitions would likely have side effects, which need time to be executed.
+///
+/// TODO: benchmark with a realistic deployment (e.g. 3 etcd nodes on different machines.)
 use std::any::Any;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -64,6 +89,7 @@ async fn run_benchmark(size: u64, iterations: u16) -> Duration {
             .prefix("bench-single-node/")
             .node_name("node1")
             .region("region-1")
+            .lease_ttl(Duration::from_secs(20))
             .build()?;
 
         let etcd = ETCDGate::new(config);

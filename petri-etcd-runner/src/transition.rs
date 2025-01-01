@@ -129,7 +129,7 @@ pub trait RunContext: Send + Sync {
 
 #[derive(Default)]
 pub(crate) struct EnabledData {
-    pub(crate) take: Vec<(TokenId, PlaceId)>,
+    pub(crate) take: Vec<(PlaceId, TokenId)>,
 }
 
 #[derive(Default)]
@@ -147,7 +147,7 @@ pub(crate) enum CheckStartChoice {
 
 #[derive(Default)]
 pub struct CheckStartResultBuilder {
-    taken: HashSet<(TokenId, PlaceId)>,
+    taken: HashSet<(PlaceId, TokenId)>,
 }
 
 impl CheckStartResult {
@@ -158,7 +158,7 @@ impl CheckStartResult {
 
 impl CheckStartResultBuilder {
     pub fn take(&mut self, token: &impl StartTokenContext) {
-        self.taken.insert((token.token_id(), token.place_id()));
+        self.taken.insert((token.place_id(), token.token_id()));
     }
 
     pub fn enabled(self) -> CheckStartResult {

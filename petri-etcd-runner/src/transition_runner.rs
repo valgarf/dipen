@@ -384,10 +384,7 @@ impl TransitionRunner {
             let mut finish_locks = self._target_place_locks(&res).await;
             let guards = TransitionRunner::_lock(&mut finish_locks, None).await?;
             let fencing_tokens = TransitionRunner::_get_fencing_tokens(&guards);
-            // Note: we need to wait until the take revision has been applied, otherwise we may
-            // forget to destroy a taken token during `_finish_transition`
-            TransitionRunner::_wait_for_revision(&mut self.rx_revision, revision).await?;
-            let new_revision = self._finish_transition(res, fencing_tokens).await?;
+            let new_revision = self._finish_transition(res, &take, fencing_tokens).await?;
             TransitionRunner::_release_locks(guards, new_revision);
 
             trace!("Finished transition.");
@@ -451,7 +448,8 @@ impl TransitionRunner {
             let mut finish_locks = self._target_place_locks(&res).await;
             let guards = TransitionRunner::_lock(&mut finish_locks, None).await?;
             let fencing_tokens = TransitionRunner::_get_fencing_tokens(&guards);
-            let rev = self._finish_transition(res, fencing_tokens).await?;
+            let taken = vec![];
+            let rev = self._finish_transition(res, &taken, fencing_tokens).await?;
             TransitionRunner::_wait_for_revision(&mut self.rx_revision, rev).await?;
         }
         Ok(())
@@ -496,7 +494,7 @@ impl TransitionRunner {
         Ok(())
     }
 
-    async fn _check_start(&mut self) -> Result<Option<Vec<(TokenId, PlaceId)>>> {
+    async fn _check_start(&mut self) -> Result<Option<Vec<(PlaceId, TokenId)>>> {
         let net = self.net_lock.read().await;
         let mut ctx = StartContextStruct::new(&net);
         match self.exec.check_start(&mut ctx).choice {
@@ -556,18 +554,18 @@ impl TransitionRunner {
 
     async fn _start_transition(
         &mut self,
-        take: &[(TokenId, PlaceId)],
+        take: &[(PlaceId, TokenId)],
         fencing_tokens: Vec<&Vec<u8>>,
     ) -> Result<u64> {
         self.etcd_gate.start_transition(take.iter().copied(), &fencing_tokens).await
     }
 
-    async fn _run_context(&mut self, take: &[(TokenId, PlaceId)]) -> Result<RunContextStruct> {
+    async fn _run_context(&mut self, take: &[(PlaceId, TokenId)]) -> Result<RunContextStruct> {
         let net = self.net_lock.read().await;
         Ok(RunContextStruct {
             tokens: take
                 .iter()
-                .map(|&(to_id, orig_pl_id)| RunTokenContextStruct {
+                .map(|&(orig_pl_id, to_id)| RunTokenContextStruct {
                     token_id: to_id,
                     orig_place_id: orig_pl_id,
                     data: net.tokens().get(&to_id).unwrap().data().into(),
@@ -603,20 +601,13 @@ impl TransitionRunner {
     async fn _finish_transition(
         &mut self,
         res: RunResult,
+        taken: &[(PlaceId, TokenId)],
         fencing_tokens: Vec<&Vec<u8>>,
     ) -> Result<u64> {
         let placed_to_ids: HashSet<TokenId> =
             res.place.iter().map(|&(to_id, _, _, _)| to_id).collect();
-        let net = self.net_lock.read().await;
-        let destroy: HashSet<(PlaceId, TokenId)> = net
-            .transitions()
-            .get(&self.transition_id)
-            .unwrap()
-            .token_ids()
-            .iter()
-            .filter(|to_id| !placed_to_ids.contains(to_id) && net.tokens().contains_key(to_id))
-            .map(|&to_id| (net.tokens().get(&to_id).unwrap().last_place(), to_id))
-            .collect();
+        let destroy: HashSet<(PlaceId, TokenId)> =
+            taken.iter().filter(|(_, to_id)| !placed_to_ids.contains(to_id)).copied().collect();
         // Should we check that the token's 'last_place' is a valid incoming arc?
         // Could only be a problem if the locking is somehow broken / manual modification
         let revision =

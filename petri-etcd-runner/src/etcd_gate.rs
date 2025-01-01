@@ -913,7 +913,7 @@ fn _token_taken_path(prefix: &str, pl_id: PlaceId, to_id: TokenId, tr_id: Transi
 impl ETCDTransitionGate {
     pub async fn start_transition(
         &mut self,
-        take: impl IntoIterator<Item = (TokenId, PlaceId)>,
+        take: impl IntoIterator<Item = (PlaceId, TokenId)>,
         fencing_tokens: &Vec<&Vec<u8>>,
     ) -> Result<u64> {
         let txn = Txn::new()
@@ -925,7 +925,7 @@ impl ETCDTransitionGate {
             )
             .and_then(
                 take.into_iter()
-                    .map(|(to_id, pl_id)| {
+                    .map(|(pl_id, to_id)| {
                         TxnOp::put(
                             _token_taken_path(&self.prefix, pl_id, to_id, self.transition_id),
                             "",
