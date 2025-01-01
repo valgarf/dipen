@@ -2,7 +2,7 @@
 ///
 /// Reads the criterion output of that benchmark. Obviously, the 'single_node' benchmark needs to be
 /// run first.
-use std::{cmp::Ordering, fs::File, io::BufReader, iter::zip, path::Path};
+use std::{cmp::Ordering, fs::File, io::BufReader, path::Path};
 
 use plotly::common::DashType;
 use serde::Deserialize;
@@ -59,30 +59,30 @@ struct Estimates {
     mean: Estimate,
     // median: Estimate,
     // median_abs_dev: Estimate,
-    // slope: Option<Estimate>,
+    slope: Option<Estimate>,
     // std_dev: Estimate,
 }
 
 #[derive(Deserialize)]
 struct Estimate {
-    // confidence_interval: ConfidenceInterval,
+    confidence_interval: ConfidenceInterval,
     point_estimate: f64,
     // standard_error: f64,
 }
 
-// #[derive(Deserialize)]
-// struct ConfidenceInterval {
-//     confidence_level: f64,
-//     lower_bound: f64,
-//     upper_bound: f64,
-// }
-
 #[derive(Deserialize)]
-struct Samples {
-    // sampling_mode: String,
-    iters: Vec<f64>,
-    times: Vec<f64>,
+struct ConfidenceInterval {
+    // confidence_level: f64,
+    lower_bound: f64,
+    upper_bound: f64,
 }
+
+// #[derive(Deserialize)]
+// struct Samples {
+//     // sampling_mode: String,
+//     iters: Vec<f64>,
+//     times: Vec<f64>,
+// }
 
 #[derive(Debug, Clone)]
 struct DataPoint {
@@ -101,7 +101,6 @@ fn add_line(
     plot_time: &mut plotly::Plot,
     plot_throughput: &mut plotly::Plot,
     color: Color,
-    throughput_factor: f64,
 ) {
     let manifest_path_str: &'static str = env!("CARGO_MANIFEST_DIR");
     let criterion_path =
@@ -124,31 +123,17 @@ fn add_line(
             let reader = BufReader::new(file);
             let estimates: Estimates = serde_json::from_reader(reader).unwrap();
 
-            let p_samples = entry.path().join("new").join("sample.json");
-            println!("Reading samples file at {:?}", p_samples);
-            let file = File::open(p_samples).unwrap();
-            let reader = BufReader::new(file);
-            let samples: Samples = serde_json::from_reader(reader).unwrap();
-            let mut samples_flat: Vec<f64> =
-                zip(samples.iters, samples.times).map(|(i, t)| t / i).collect();
-            samples_flat.sort_by(|lhs, rhs| {
-                if lhs == rhs {
-                    Ordering::Equal
-                } else if lhs < rhs {
-                    Ordering::Less
-                } else {
-                    Ordering::Greater
-                }
-            });
-            let cutoff = (samples_flat.len() as f64 * 0.05).round() as usize;
-            let elements = benchmark.throughput.elements as f64;
-            let num_nets = elements;
-            let time = estimates.mean.point_estimate / 1e9; // ns
-            let time_lower = samples_flat[cutoff] / 1e9;
-            let time_upper = samples_flat[samples_flat.len() - cutoff - 1] / 1e9;
-            let throughput = throughput_factor * num_nets / time;
-            let throughput_lower = throughput_factor * num_nets / time_upper;
-            let throughput_upper = throughput_factor * num_nets / time_lower;
+            //// use the slope analysis of criterion directly (or the mean if the slope is not
+            //// available)
+            let estimate = estimates.slope.unwrap_or(estimates.mean);
+            let time = estimate.point_estimate / 1e6; // ns -> ms
+            let time_lower = estimate.confidence_interval.lower_bound / 1e6; // ns -> ms;
+            let time_upper = estimate.confidence_interval.upper_bound / 1e6; // ns -> ms;
+
+            let num_nets = benchmark.throughput.elements as f64;
+            let throughput = num_nets / time * 1e3; // transitions/s (time is in ms)
+            let throughput_lower = num_nets / time_upper * 1e3; // transitions/s (time is in ms)
+            let throughput_upper = num_nets / time_lower * 1e3; // transitions/s (time is in ms)
             data.push(DataPoint {
                 time,
                 time_lower,
@@ -216,7 +201,6 @@ fn single_node() {
         &mut plot_time,
         &mut plot_troughput,
         Color { r: 200, g: 120, b: 0 },
-        1.0,
     );
 
     plot_time.set_layout(
@@ -231,7 +215,7 @@ fn single_node() {
             .y_axis(
                 plotly::layout::Axis::new()
                     .type_(plotly::layout::AxisType::Log)
-                    .title("Time per transition [s]"),
+                    .title("Time per transition [ms]"),
             ),
     );
     let filename = criterion_path.join("single_node_times");
@@ -253,7 +237,8 @@ fn single_node() {
             .y_axis(
                 plotly::layout::Axis::new()
                     .type_(plotly::layout::AxisType::Linear)
-                    .title("Throughput [Transitions/s]"),
+                    .title("Throughput [transitions/s]")
+                    .range(vec![0, 8000]),
             ),
     );
     let filename = criterion_path.join("single_node_throughput_lin");
@@ -267,7 +252,8 @@ fn single_node() {
         plot_troughput.layout().clone().y_axis(
             plotly::layout::Axis::new()
                 .type_(plotly::layout::AxisType::Log)
-                .title("Throughput [Transitions/s]"),
+                .title("Throughput [transitions/s]")
+                .range(vec![2.25, 4.1]), // exponents
         ),
     );
     let filename = criterion_path.join("single_node_throughput_log");
