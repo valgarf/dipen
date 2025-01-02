@@ -10,4 +10,10 @@ name = "dipen"
 crate-type = ["cdylib"]
 
 [dependencies]
+dipen = { version = "0.1.0", path = "../dipen" }
 pyo3 = "0.23.3"
+pyo3-log = "0.12.1"
+tokio = { version = "1.42.0", features = ["full", "tracing"] }
+tokio-util = "0.7.13"
+tracing = { version = "0.1.41", features = ["async-await"] }
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }

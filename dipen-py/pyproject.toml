@@ -10,6 +10,9 @@ classifiers = [
     "Programming Language :: Python :: Implementation :: CPython",
 ]
 dynamic = ["version"]
+dependencies = [
+    "loguru>=0.7.3",
+]
 
 [tool.maturin]
 features = ["pyo3/extension-module"]

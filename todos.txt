@@ -1,5 +1,7 @@
 - python bindings
 - Readme
+- fix random 'check one transition multiple times' bug
+- improve logging on python (include fields from scopes, log scope start / end)
 - extract etcd logic into traits
 - tests (with multiprocessing?)
 - visualization
