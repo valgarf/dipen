@@ -9,7 +9,7 @@ use tracing::{debug, trace, warn};
 
 use crate::error::{PetriError, Result};
 use crate::net::{ArcVariant, NetChangeEvent, PetriNet, PetriNetBuilder, PlaceId, TransitionId};
-use crate::place_locks::PlaceLock;
+use crate::etcd::PlaceLock;
 use crate::exec::TransitionExecutor;
 use crate::transition_runner::{TransitionExecutorDispatch, TransitionExecutorDispatchStruct, TransitionRunner, ValidateContextStruct};
 use crate::ETCDGate;
@@ -48,7 +48,7 @@ pub async fn run(
     }
     let region_name = etcd.config.region.clone();
     let node_name = etcd.config.node_name.clone();
-    // validate assignement (all transitions have a runner assigned and its validate function
+    // validate assignement (all transitions have an executor assigned and its validate function
     // succeeds): We don't want to connect to etcd if we have an inconsistent net to begin with.
     let net_builder = net_builder.only_region(&etcd.config.region)?;
     for tr_name in net_builder.transitions().keys() {

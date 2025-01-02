@@ -1,12 +1,11 @@
 pub mod error;
-mod etcd_gate;
+pub mod etcd;
 pub mod exec;
 pub mod net;
-mod place_locks;
 pub mod runner;
 mod transition_runner;
 
-pub use etcd_gate::{
+pub use etcd::{
     ETCDConfig, ETCDConfigBuilder, ETCDConfigBuilderError, ETCDGate, ETCDTransitionGate,
 };
 

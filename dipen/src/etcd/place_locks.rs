@@ -1,4 +1,4 @@
-use std::str::from_utf8;
+use std::{cmp::max, str::from_utf8};
 
 use etcd_client::{LockClient, LockOptions};
 use tokio::sync::{Mutex, MutexGuard};
@@ -6,16 +6,16 @@ use tracing::info;
 
 use crate::{error::Result, net::PlaceId};
 pub struct PlaceLock {
-    pub value: Mutex<PlaceLockData>,
-    pub prefix: String,
-    pub place_id: PlaceId,
-    pub lease: i64,
+    pub(super) value: Mutex<PlaceLockData>,
+    pub(super) prefix: String,
+    pub(super) place_id: PlaceId,
+    pub(super) lease: i64,
 }
 
 pub struct PlaceLockData {
-    pub fencing_token: Vec<u8>,
-    pub min_revision: u64,
-    pub lock_client: LockClient,
+    fencing_token: Vec<u8>,
+    min_revision: u64,
+    lock_client: LockClient,
 }
 
 impl PlaceLock {
@@ -26,6 +26,10 @@ impl PlaceLock {
             lock_client,
         });
         PlaceLock { value, prefix, place_id, lease }
+    }
+
+    pub fn place_id(&self) -> PlaceId {
+        self.place_id
     }
 
     fn _key(&self) -> String {
@@ -65,5 +69,20 @@ impl PlaceLock {
             let _ = value.lock_client.unlock(fencing_token).await?;
         }
         Ok(())
+    }
+}
+
+impl PlaceLockData {
+    pub fn min_revision(&self) -> u64 {
+        self.min_revision
+    }
+
+    pub fn set_min_revision(&mut self, value: u64) -> u64 {
+        self.min_revision = max(self.min_revision, value);
+        self.min_revision
+    }
+
+    pub fn fencing_token(&self) -> &[u8] {
+        &self.fencing_token
     }
 }

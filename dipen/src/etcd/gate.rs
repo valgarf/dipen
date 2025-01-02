@@ -9,8 +9,8 @@ use std::{
 
 use derive_builder::Builder;
 use etcd_client::{
-    Compare, CompareOp, DeleteOptions, EventType, GetOptions, KvClient, LeaseGrantOptions,
-    PutOptions, Txn, TxnOp, WatchClient, WatchOptions,
+    Compare, CompareOp, EventType, GetOptions, KvClient, LeaseGrantOptions, PutOptions, Txn, TxnOp,
+    WatchClient, WatchOptions,
 };
 use tokio::{join, select, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
@@ -18,11 +18,13 @@ use tracing::{debug, error, info, trace, warn};
 
 use crate::{
     error::{PetriError, Result},
+    etcd::PlaceLock,
     net::{
         NetChange, NetChangeEvent, PetriNetBuilder, PetriNetIds, PlaceId, TokenId, TransitionId,
     },
-    place_locks::PlaceLock,
 };
+
+use super::ETCDTransitionGate;
 pub struct ETCDGate {
     pub(crate) config: ETCDConfig,
     cancel_token: Option<CancellationToken>,
@@ -32,13 +34,6 @@ pub struct ETCDGate {
     watching_join_handle: Option<JoinHandle<()>>,
     lock_requests_handle: Option<JoinHandle<()>>,
     place_locks: HashMap<PlaceId, Arc<PlaceLock>>,
-}
-
-pub struct ETCDTransitionGate {
-    client: KvClient,
-    transition_id: TransitionId,
-    prefix: String,
-    lease: i64,
 }
 
 #[derive(Builder)]
@@ -715,7 +710,7 @@ impl ETCDGate {
         Ok(key.split('/').collect())
     }
 
-    async fn _get_next_id(kv: &mut KvClient, prefix: &str, ktype: &str) -> Result<i64> {
+    pub(super) async fn _get_next_id(kv: &mut KvClient, prefix: &str, ktype: &str) -> Result<i64> {
         let counter_name = [prefix, "id_generator/", ktype].concat();
         let resp = kv.put(counter_name, [], Some(PutOptions::new().with_prev_key())).await?;
         let version = match resp.prev_key() {
@@ -897,114 +892,5 @@ impl ETCDGate {
 impl Debug for ETCDGate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ETCDGate").field("lease", &self.lease.unwrap_or(-1)).finish()
-    }
-}
-
-#[inline]
-fn _token_path(prefix: &str, pl_id: PlaceId, to_id: TokenId) -> String {
-    format!("{prefix}pl/{pl_id}/{to_id}", prefix = prefix, pl_id = pl_id.0, to_id = to_id.0)
-}
-
-#[inline]
-fn _token_taken_path(prefix: &str, pl_id: PlaceId, to_id: TokenId, tr_id: TransitionId) -> String {
-    format!("{to_path}/{tr_id}", to_path = _token_path(prefix, pl_id, to_id), tr_id = tr_id.0)
-}
-
-impl ETCDTransitionGate {
-    pub async fn start_transition(
-        &mut self,
-        take: impl IntoIterator<Item = (PlaceId, TokenId)>,
-        fencing_tokens: &Vec<&Vec<u8>>,
-    ) -> Result<u64> {
-        let txn = Txn::new()
-            .when(
-                fencing_tokens
-                    .iter()
-                    .map(|&fto| Compare::lease(fto.clone(), CompareOp::Equal, self.lease))
-                    .collect::<Vec<Compare>>(),
-            )
-            .and_then(
-                take.into_iter()
-                    .map(|(pl_id, to_id)| {
-                        TxnOp::put(
-                            _token_taken_path(&self.prefix, pl_id, to_id, self.transition_id),
-                            "",
-                            None,
-                            //Some(PutOptions::new().with_lease(self.lease)),
-                        )
-                    })
-                    .collect::<Vec<_>>(),
-            );
-        let res = self.client.txn(txn).await?;
-        if res.succeeded() {
-            Ok(res
-                .header()
-                .expect("Missing header from etcd in 'start_transition' call.")
-                .revision() as u64)
-        } else {
-            Err(PetriError::InconsistentState(format!(
-                "Failed to execute transaction on etcd to start transition '{}' (lease lost?)",
-                self.transition_id.0
-            )))
-        }
-    }
-
-    pub async fn end_transition(
-        &mut self,
-        place: impl IntoIterator<Item = (TokenId, PlaceId, PlaceId, Vec<u8>)>,
-        create: impl IntoIterator<Item = (PlaceId, Vec<u8>)>,
-        destroy: impl IntoIterator<Item = (PlaceId, TokenId)>,
-        fencing_tokens: &Vec<&Vec<u8>>,
-    ) -> Result<u64> {
-        // check if token is still at place? Should not happen if locks work correctly
-        let cond = fencing_tokens
-            .iter()
-            .map(|&fto| Compare::lease(fto.clone(), CompareOp::Equal, self.lease))
-            .collect::<Vec<Compare>>();
-
-        let mut new_tokens = vec![];
-        for (pl_id, data) in create {
-            let new_id = ETCDGate::_get_next_id(&mut self.client, &self.prefix, "to").await?;
-            new_tokens.push((TokenId(new_id as u64), pl_id, data));
-        }
-        let ops = place
-            .into_iter()
-            .flat_map(|(to_id, orig_pl_id, new_pl_id, data)| {
-                let delete_op = if orig_pl_id != new_pl_id {
-                    TxnOp::delete(
-                        _token_path(&self.prefix, orig_pl_id, to_id),
-                        Some(DeleteOptions::new().with_prefix()),
-                    )
-                } else {
-                    TxnOp::delete(
-                        _token_taken_path(&self.prefix, orig_pl_id, to_id, self.transition_id),
-                        None,
-                    )
-                };
-                let put_op = TxnOp::put(_token_path(&self.prefix, new_pl_id, to_id), data, None);
-                [delete_op, put_op]
-            })
-            .chain(new_tokens.into_iter().map(|(to_id, pl_id, data)| {
-                TxnOp::put(_token_path(&self.prefix, pl_id, to_id), data, None)
-            }))
-            .chain(destroy.into_iter().map(|(pl_id, to_id)| {
-                TxnOp::delete(
-                    _token_path(&self.prefix, pl_id, to_id),
-                    Some(DeleteOptions::new().with_prefix()),
-                )
-            }))
-            .collect::<Vec<_>>();
-
-        let txn = Txn::new().when(cond).and_then(ops);
-        let resp = self.client.txn(txn).await?;
-        if !resp.succeeded() {
-            return Err(PetriError::InconsistentState(format!(
-                "Failed to execute transaction on etcd to end transition '{}' (lease lost?)",
-                self.transition_id.0
-            )));
-        }
-        let header =
-            resp.header().ok_or(PetriError::Other("header missing from etcd reply.".into()))?;
-        Ok(header.revision() as u64)
     }
 }
