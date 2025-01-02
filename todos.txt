@@ -1,7 +1,6 @@
-
-
-- store arcs for transition / place on net (BTree with transition id first?)
 - python bindings
+- Readme
+- extract etcd logic into traits
 - tests (with multiprocessing?)
 - visualization
 - mark running transitions?
@@ -9,4 +8,4 @@
 - store 'last_changed', 'last_start_firing', 'last_finished_firing', etc. time from local time?
     -> startup time for initial load?
 - remove transitions from own region on etcd, if not in configuration?
-- statistics (transitions / s, how often each was fired?)
+- statistics (transitions / s, how often was each transition fired)? 
