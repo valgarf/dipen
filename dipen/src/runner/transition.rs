@@ -1,8 +1,6 @@
 use futures::future::select_all;
 use futures::FutureExt;
-use std::any::Any;
 use std::collections::{HashMap, HashSet};
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::select;
@@ -10,16 +8,13 @@ use tokio::sync::{MutexGuard, RwLock};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, trace};
 
+use super::context::*;
+use super::dispatch::TransitionExecutorDispatch;
 use crate::error::{PetriError, Result};
+use crate::etcd::ETCDTransitionGate;
 use crate::etcd::{PlaceLock, PlaceLockData};
-use crate::exec::{
-    CheckStartChoice, CheckStartResult, CreateArcContext, CreateContext, CreatePlaceContext,
-    RunContext, RunResult, RunResultData, RunTokenContext, StartContext, StartTakenTokenContext,
-    StartTokenContext, TransitionExecutor, ValidateArcContext, ValidateContext,
-    ValidatePlaceContext, ValidationResult,
-};
-use crate::net::{self, PetriNet, PlaceId, TokenId, TransitionId};
-use crate::ETCDTransitionGate;
+use crate::exec::{CheckStartChoice, RunResult, RunResultData};
+use crate::net::{self, PlaceId, TokenId};
 
 pub(crate) struct TransitionRunner {
     pub cancel_token: CancellationToken,
@@ -43,283 +38,9 @@ pub(crate) struct RunData {
     auto_recheck: Duration,
 }
 
-// # context implementations
-// ## validate context
-pub(crate) struct ValidateContextStruct<'a> {
-    pub net: &'a net::PetriNetBuilder,
-    pub transition_name: &'a str,
-    pub arcs: Vec<&'a net::Arc>,
-}
-struct ValidateArcContextStruct<'a> {
-    arc: &'a net::Arc,
-    place: &'a net::Place,
-}
-struct ValidatePlaceContextStruct<'a> {
-    place: &'a net::Place,
-}
-
-impl<'a> ValidateContext for ValidateContextStruct<'a> {
-    fn transition_name(&self) -> &str {
-        self.transition_name
-    }
-
-    fn arcs(&self) -> impl Iterator<Item = impl crate::exec::ValidateArcContext> {
-        self.arcs.iter().map(|arc| ValidateArcContextStruct {
-            arc,
-            place: self.net.places().get(arc.place()).unwrap(),
-        })
-    }
-}
-
-impl<'a> ValidateArcContext for ValidateArcContextStruct<'a> {
-    fn arc_name(&self) -> &str {
-        self.arc.name()
-    }
-
-    fn variant(&self) -> net::ArcVariant {
-        self.arc.variant()
-    }
-
-    fn place_context(&self) -> impl crate::exec::ValidatePlaceContext {
-        ValidatePlaceContextStruct { place: self.place }
-    }
-}
-
-impl ValidatePlaceContext for ValidatePlaceContextStruct<'_> {
-    fn place_name(&self) -> &str {
-        self.place.name()
-    }
-}
-
-// ## create context
-pub(crate) struct CreateContextStruct<'a> {
-    pub(crate) net: &'a net::PetriNet,
-    pub(crate) transition_name: &'a str,
-    pub(crate) transition_id: TransitionId,
-    pub(crate) arcs: Vec<(PlaceId, &'a net::Arc)>,
-    pub(crate) registry_data: Option<Arc<dyn Any + Send + Sync>>,
-}
-struct CreateArcContextStruct<'a> {
-    arc: &'a net::Arc,
-    place_id: PlaceId,
-    place: &'a net::Place,
-}
-struct CreatePlaceContextStruct<'a> {
-    place_id: PlaceId,
-    place: &'a net::Place,
-}
-
-impl<'a> CreateContext for CreateContextStruct<'a> {
-    fn transition_name(&self) -> &str {
-        self.transition_name
-    }
-
-    fn transition_id(&self) -> TransitionId {
-        self.transition_id
-    }
-
-    fn arcs(&self) -> impl Iterator<Item = impl crate::exec::CreateArcContext> {
-        self.arcs.iter().map(|&(pl_id, arc)| CreateArcContextStruct {
-            arc,
-            place: self.net.places().get(&pl_id).unwrap(),
-            place_id: pl_id,
-        })
-    }
-
-    fn registry_data(&self) -> Option<Arc<dyn Any + Send + Sync>> {
-        self.registry_data.clone()
-    }
-}
-
-impl<'a> CreateArcContext for CreateArcContextStruct<'a> {
-    fn arc_name(&self) -> &str {
-        self.arc.name()
-    }
-
-    fn variant(&self) -> net::ArcVariant {
-        self.arc.variant()
-    }
-
-    fn place_context(&self) -> impl crate::exec::CreatePlaceContext {
-        CreatePlaceContextStruct { place: self.place, place_id: self.place_id }
-    }
-}
-
-impl CreatePlaceContext for CreatePlaceContextStruct<'_> {
-    fn place_name(&self) -> &str {
-        self.place.name()
-    }
-
-    fn place_id(&self) -> net::PlaceId {
-        self.place_id
-    }
-}
-
-// ## start context
-
-pub(crate) struct StartContextStruct<'a> {
-    net: &'a PetriNet,
-}
-
-pub(crate) struct StartTokenContextStruct<'a> {
-    net: &'a PetriNet,
-    token_id: TokenId,
-    place_id: PlaceId,
-}
-
-pub(crate) struct StartTakenTokenContextStruct<'a> {
-    net: &'a PetriNet,
-    token_id: TokenId,
-    transition_id: TransitionId,
-    place_id: PlaceId,
-}
-
-impl<'a> StartContextStruct<'a> {
-    fn new(net: &'a PetriNet) -> Self {
-        Self { net }
-    }
-}
-impl<'a> StartContext for StartContextStruct<'a> {
-    fn tokens_at(
-        &self,
-        place_id: PlaceId,
-    ) -> impl Iterator<Item = impl crate::exec::StartTokenContext> {
-        let net = self.net;
-        net.places()
-            .get(&place_id)
-            .unwrap()
-            .token_ids()
-            .iter()
-            .map(move |&token_id| StartTokenContextStruct { net, token_id, place_id })
-    }
-
-    fn taken_tokens_at(
-        &self,
-        place_id: PlaceId,
-    ) -> impl Iterator<Item = impl crate::exec::StartTakenTokenContext> {
-        let net = self.net;
-        net.places().get(&place_id).unwrap().taken_token_ids().iter().map(
-            move |(&token_id, &transition_id)| StartTakenTokenContextStruct {
-                net,
-                token_id,
-                transition_id,
-                place_id,
-            },
-        )
-    }
-}
-
-impl StartTokenContext for StartTokenContextStruct<'_> {
-    fn token_id(&self) -> TokenId {
-        self.token_id
-    }
-
-    fn data(&self) -> &[u8] {
-        self.net.tokens().get(&self.token_id).unwrap().data()
-    }
-
-    fn place_id(&self) -> PlaceId {
-        self.place_id
-    }
-}
-
-impl StartTakenTokenContext for StartTakenTokenContextStruct<'_> {
-    fn token_id(&self) -> TokenId {
-        self.token_id
-    }
-
-    fn data(&self) -> &[u8] {
-        self.net.tokens().get(&self.token_id).unwrap().data()
-    }
-
-    fn place_id(&self) -> PlaceId {
-        self.place_id
-    }
-
-    fn transition_id(&self) -> TransitionId {
-        self.transition_id
-    }
-}
-
 // ## run context
 
-pub(crate) struct RunContextStruct {
-    tokens: Vec<RunTokenContextStruct>,
-}
-
-pub(crate) struct RunTokenContextStruct {
-    token_id: TokenId,
-    orig_place_id: PlaceId,
-    data: Vec<u8>,
-}
-
-impl RunContext for RunContextStruct {
-    fn tokens(&self) -> impl Iterator<Item = &impl crate::exec::RunTokenContext> {
-        self.tokens.iter()
-    }
-}
-
-impl RunTokenContext for RunTokenContextStruct {
-    fn token_id(&self) -> TokenId {
-        self.token_id
-    }
-
-    fn data(&self) -> &[u8] {
-        &self.data
-    }
-
-    fn orig_place_id(&self) -> PlaceId {
-        self.orig_place_id
-    }
-}
-
 // ## dispatch
-pub trait TransitionExecutorDispatch: Send + Sync {
-    fn clone_empty(&self) -> Box<dyn TransitionExecutorDispatch>;
-    fn validate(&self, ctx: &ValidateContextStruct) -> ValidationResult;
-    fn create(&mut self, ctx: CreateContextStruct);
-    fn check_start(&mut self, ctx: &mut StartContextStruct) -> CheckStartResult;
-    fn run<'a, 'b>(
-        &'a mut self,
-        ctx: &'b mut RunContextStruct,
-    ) -> Pin<Box<dyn std::future::Future<Output = RunResult> + Send + 'b>>
-    where
-        'a: 'b;
-}
-pub(crate) struct TransitionExecutorDispatchStruct<T: TransitionExecutor> {
-    pub(crate) executor: Option<T>,
-    pub(crate) data: Option<Arc<dyn Any + Send + Sync>>,
-}
-
-impl<T: TransitionExecutor + Send + Sync + 'static> TransitionExecutorDispatch
-    for TransitionExecutorDispatchStruct<T>
-{
-    fn clone_empty(&self) -> Box<dyn TransitionExecutorDispatch> {
-        Box::new(Self { executor: None, data: self.data.clone() })
-    }
-    fn validate(&self, ctx: &ValidateContextStruct) -> ValidationResult {
-        T::validate(ctx)
-    }
-
-    fn create(&mut self, mut ctx: CreateContextStruct) {
-        ctx.registry_data = self.data.clone();
-        self.executor = Some(T::new(&ctx));
-    }
-
-    fn check_start(&mut self, ctx: &mut StartContextStruct) -> CheckStartResult {
-        self.executor.as_mut().unwrap().check_start(ctx)
-    }
-
-    fn run<'a, 'b>(
-        &'a mut self,
-        ctx: &'b mut RunContextStruct,
-    ) -> Pin<Box<dyn std::future::Future<Output = RunResult> + Send + 'b>>
-    where
-        'a: 'b,
-    {
-        Box::pin(self.executor.as_mut().unwrap().run(ctx))
-    }
-}
 
 // runner implementation
 impl TransitionRunner {
@@ -406,7 +127,7 @@ impl TransitionRunner {
 
     async fn _create_executor(&mut self) {
         let net = self.net_lock.read().await;
-        let ctx = CreateContextStruct {
+        let ctx = create::CreateContextStruct {
             net: &net,
             transition_name: net.transitions().get(&self.transition_id).unwrap().name(),
             transition_id: self.transition_id,
@@ -496,7 +217,7 @@ impl TransitionRunner {
 
     async fn _check_start(&mut self) -> Result<Option<Vec<(PlaceId, TokenId)>>> {
         let net = self.net_lock.read().await;
-        let mut ctx = StartContextStruct::new(&net);
+        let mut ctx = start::StartContextStruct::new(&net);
         match self.exec.check_start(&mut ctx).to_choice() {
             CheckStartChoice::Disabled(data) => {
                 self.run_data.wait_for = data.wait_for;
@@ -560,12 +281,12 @@ impl TransitionRunner {
         self.etcd_gate.start_transition(take.iter().copied(), &fencing_tokens).await
     }
 
-    async fn _run_context(&mut self, take: &[(PlaceId, TokenId)]) -> Result<RunContextStruct> {
+    async fn _run_context(&mut self, take: &[(PlaceId, TokenId)]) -> Result<run::RunContextStruct> {
         let net = self.net_lock.read().await;
-        Ok(RunContextStruct {
+        Ok(run::RunContextStruct {
             tokens: take
                 .iter()
-                .map(|&(orig_pl_id, to_id)| RunTokenContextStruct {
+                .map(|&(orig_pl_id, to_id)| run::RunTokenContextStruct {
                     token_id: to_id,
                     orig_place_id: orig_pl_id,
                     data: net.tokens().get(&to_id).unwrap().data().into(),
@@ -573,7 +294,7 @@ impl TransitionRunner {
                 .collect(),
         })
     }
-    async fn _run(&mut self, ctx: &mut RunContextStruct) -> Result<RunResult> {
+    async fn _run(&mut self, ctx: &mut run::RunContextStruct) -> Result<RunResult> {
         Ok(self.exec.run(ctx).await)
     }
 

@@ -36,11 +36,11 @@ use criterion::Criterion;
 use criterion::SamplingMode;
 use criterion::Throughput;
 use dipen::error::PetriError;
+use dipen::etcd::ETCDConfigBuilder;
+use dipen::etcd::ETCDGate;
 use dipen::net;
 use dipen::net::PetriNetBuilder;
 use dipen::runner::ExecutorRegistry;
-use dipen::ETCDConfigBuilder;
-use dipen::ETCDGate;
 use tokio::runtime::Runtime;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -93,12 +93,7 @@ async fn run_benchmark(size: u64, iterations: u16) -> Duration {
             .build()?;
 
         let etcd = ETCDGate::new(config);
-        let run = dipen::runner::run(
-            Arc::clone(&net),
-            etcd,
-            executors,
-            shutdown_token.clone(),
-        );
+        let run = dipen::runner::run(Arc::clone(&net), etcd, executors, shutdown_token.clone());
         let mut join_set = JoinSet::new();
 
         join_set.spawn(async {

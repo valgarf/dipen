@@ -2,10 +2,10 @@ use std::sync::Arc;
 
 use dipen::{
     error::Result as PetriResult,
+    etcd::{ETCDConfigBuilder, ETCDGate},
     net,
     net::{ArcVariant, PetriNetBuilder, Place, Transition},
     runner::ExecutorRegistry,
-    ETCDConfigBuilder, ETCDGate,
 };
 use tokio::signal;
 use tokio_util::sync::CancellationToken;
