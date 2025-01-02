@@ -20,16 +20,18 @@ use crate::{
     error::{PetriError, Result},
     etcd::PlaceLock,
     net::{
-        NetChange, NetChangeEvent, PetriNetBuilder, PetriNetIds, PlaceId, TokenId, TransitionId,
+        NetChange, NetChangeEvent, PetriNetBuilder, PetriNetIds, PlaceId, Revision, TokenId,
+        TransitionId,
     },
 };
 
-use super::ETCDTransitionGate;
+use super::{ETCDTransitionGate, LeaseId, Version};
+
 pub struct ETCDGate {
     pub(crate) config: ETCDConfig,
     cancel_token: Option<CancellationToken>,
     client: Option<etcd_client::Client>,
-    lease: Option<i64>,
+    lease: Option<LeaseId>,
     keep_alive_join_handle: Option<JoinHandle<()>>,
     watching_join_handle: Option<JoinHandle<()>>,
     lock_requests_handle: Option<JoinHandle<()>>,
@@ -49,7 +51,7 @@ pub struct ETCDConfig {
     #[builder(setter(custom), default)]
     pub connect_options: Option<etcd_client::ConnectOptions>,
     #[builder(setter(strip_option), default)]
-    pub lease_id: Option<i64>,
+    pub lease_id: Option<LeaseId>,
     #[builder(default = "Duration::from_secs(10)")]
     pub lease_ttl: Duration,
 }
@@ -74,8 +76,8 @@ struct ETCDEvent<'a> {
     event_type: EventType,
     key: &'a [u8],
     value: &'a [u8],
-    revision: i64,
-    version: i64,
+    revision: Revision,
+    version: Version,
 }
 
 impl Debug for ETCDEvent<'_> {
@@ -84,8 +86,8 @@ impl Debug for ETCDEvent<'_> {
             .field("event_type", &self.event_type)
             .field("key", &from_utf8(self.key).unwrap_or("<not valid utf8>"))
             .field("value", &from_utf8(self.value).unwrap_or("<not valid utf8>"))
-            .field("revision", &self.revision)
-            .field("version", &self.version)
+            .field("revision", &self.revision.0)
+            .field("version", &self.version.0)
             .finish()
     }
 }
@@ -95,7 +97,7 @@ macro_rules! check_place_match {
         if ($lhs != $rhs) {
             Err(PetriError::InconsistentState(format!(
                 "Token '{}' seems to be in two places at once ({} and {}) during revision {} ({}:{})",
-                $token_id.0, $lhs.0, $rhs.0, $rev, file!(), line!()
+                $token_id.0, $lhs.0, $rhs.0, $rev.0, file!(), line!()
             )))
         } else {
             Ok(())
@@ -126,17 +128,18 @@ macro_rules! cancelable_send {
 ///
 /// Data Layout on etcd:
 ///
-/// <prefix>/id_generator -> version of this field is used to create unique ids
+/// <prefix>/id_generator/pl -> version of this field is used to create unique ids for places
+/// <prefix>/id_generator/tr -> ... for transitions
+/// <prefix>/id_generator/to -> ... for tokens
 /// <prefix>/region/<region-name>/election -> used as election for the given region. Child key values indicate running nodes.
 /// <prefix>/place_ids/<place-name> -> value is id of that place
 /// <prefix>/transition_ids/<transition-name> -> value is id of that transition
 /// <prefix>/transition_ids/<transition-name>/region -> value is region of that transition
 /// <prefix>/pl/<place-id>/<token-id> -> value is the token data, place id provides the position
 /// <prefix>/pl/<place-id>/<token-id>/<transition-id> -> value currently unused, token has been taken by the given transition (leased, will be undone if cancelled)
-/// <prefix>/pl/<place-id>/lock -> value is the node name (leased) TODO: use actual locking mechanism? or election?
-/// <prefix>/pl/<place-id>/lock/<transition-id> -> value is the node name, used to request a lock. Lock owner should free it as soon as possible
-/// <prefix>/tr/<region-name>/<transition-id>/request/<request-key> -> value is the input data, request to execute this manual transition.
-/// <prefix>/tr/<region-name>/<transition-id>/request/<request-key>/response -> request has been fulfilled (transition has been executed). It may provide reponse data as value. Request owner should cle
+/// <prefix>/pl/<place-id>/lock/<lease-is> -> Lock request for place by node identified by its lease. NOTE: locks are kept indefinitely. If a second lock request appears, the lock owner should free its lock as soon as possible.
+/// <prefix>/tr/<region-name>/<transition-id>/request/<request-key> -> value is the input data, request to execute this manual transition. TODO: not yet implemented
+/// <prefix>/tr/<region-name>/<transition-id>/request/<request-key>/response -> request has been fulfilled (transition has been executed). It may provide reponse data as value. Request owner should cler the field. TODO: not yet implemented
 ///
 impl ETCDGate {
     pub fn new(config: ETCDConfig) -> Self {
@@ -215,7 +218,7 @@ impl ETCDGate {
         let op = election_client.campaign(
             election_name.clone(),
             self.config.node_name.as_ref() as &str,
-            lease_id,
+            lease_id.0,
         );
         let mut dur = Duration::from_secs(10);
 
@@ -350,9 +353,9 @@ impl ETCDGate {
         &mut self,
         tx: &tokio::sync::mpsc::Sender<NetChangeEvent>,
         place_ids: &HashSet<PlaceId>,
-    ) -> Result<i64> {
+    ) -> Result<Revision> {
         // construct initial event
-        let mut initial_event = NetChangeEvent::new(0);
+        let mut initial_event = NetChangeEvent::new(Revision(0));
         initial_event.changes.push(NetChange::Reset());
 
         // query all data for the initial event
@@ -371,8 +374,8 @@ impl ETCDGate {
                 event_type: EventType::Put,
                 key: kv.key(),
                 value: kv.value(),
-                revision,
-                version: 1, // ensures that all events are 'created'  events
+                revision: revision.into(),
+                version: 1.into(), // ensures that all events are 'created'  events
             })
             .collect();
 
@@ -391,7 +394,7 @@ impl ETCDGate {
             // not be any data to load. We send an empty event with revision 1.
             // The etcd cluster should always be at revision 1 at this point. Assigning ids to the
             // transitions requires revisions.
-            let start_event = NetChangeEvent::new(1);
+            let start_event = NetChangeEvent::new(Revision(1));
             cancelable_send!(tx, start_event, cancel_token, "Net event change receiver")?;
         } else {
             for evt in evts {
@@ -399,7 +402,7 @@ impl ETCDGate {
             }
         }
 
-        Ok(revision)
+        Ok(revision.into())
     }
 
     async fn _lock_requests(
@@ -424,18 +427,21 @@ impl ETCDGate {
     #[allow(clippy::too_many_arguments)]
     async fn _watch_events(
         prefix: String,
-        revision: i64,
+        revision: Revision,
         mut watch_client: WatchClient,
         tx_events: tokio::sync::mpsc::Sender<NetChangeEvent>,
         tx_locks: tokio::sync::mpsc::Sender<HashSet<PlaceId>>,
         place_ids: HashSet<PlaceId>,
         cancel_token: CancellationToken,
-        lease: i64,
+        lease: LeaseId,
     ) -> Result<()> {
         let watch = watch_client.watch(
             prefix.clone() + "pl/",
             Some(
-                WatchOptions::new().with_prefix().with_start_revision(revision + 1).with_prev_key(),
+                WatchOptions::new()
+                    .with_prefix()
+                    .with_start_revision((revision.0 + 1) as i64)
+                    .with_prev_key(),
             ),
         );
         let (_watcher, mut stream) = watch.await?;
@@ -451,8 +457,8 @@ impl ETCDGate {
                     } else {
                         evt.prev_kv().unwrap().value()
                     },
-                    revision: evt.kv().unwrap().mod_revision(),
-                    version: evt.kv().unwrap().version(),
+                    revision: evt.kv().unwrap().mod_revision().into(),
+                    version: evt.kv().unwrap().version().into(),
                 })
                 .collect();
 
@@ -482,7 +488,7 @@ impl ETCDGate {
         prefix: String,
         events: &[ETCDEvent],
         place_ids: &HashSet<PlaceId>,
-        lease: i64,
+        lease: LeaseId,
     ) -> Result<(Vec<NetChangeEvent>, HashSet<PlaceId>)> {
         // <prefix>/pl/<place-id>/<token-id> -> value is the token data, place id provides the position
         // <prefix>/pl/<place-id>/<token-id>/<transition-id> -> value is the token data, token has been taken by the given transition (leased, will be undone if cancelled)
@@ -501,7 +507,7 @@ impl ETCDGate {
             // let chunk = chunk.iter().collect::<Vec<_>>();
             // warn!("New chunk: {:?}", chunk);
 
-            let mut change_evt = NetChangeEvent::new(chunk.first().unwrap().revision as u64);
+            let mut change_evt = NetChangeEvent::new(chunk.first().unwrap().revision);
             destroyed.clear();
             created.clear();
             updated.clear();
@@ -523,7 +529,7 @@ impl ETCDGate {
                 if split[2] == "lock" && split.len() == 4 {
                     if evt.event_type == EventType::Put {
                         if let Ok(lease_for_lock) = i64::from_str_radix(split[3], 16) {
-                            if lease_for_lock != lease {
+                            if LeaseId(lease_for_lock) != lease {
                                 external_lock_requests.insert(place_id);
                                 // lock requested by someone else on a place used by us
                             }
@@ -550,7 +556,7 @@ impl ETCDGate {
                     } else {
                         match evt.event_type {
                             EventType::Put => {
-                                if evt.version == 1 {
+                                if evt.version == Version(1) {
                                     created.insert(token_id, (place_id, evt.value.into()));
                                 } else {
                                     updated.insert(token_id, (place_id, evt.value.into()));
@@ -788,7 +794,7 @@ impl ETCDGate {
         }
     }
 
-    fn _lease(&mut self) -> Result<i64> {
+    fn _lease(&mut self) -> Result<LeaseId> {
         match self.lease {
             Some(lease) => Ok(lease),
             None => Err(PetriError::NotConnected()),
@@ -804,10 +810,10 @@ impl ETCDGate {
 
     async fn _keep_alive_loop(
         lease_client: &mut etcd_client::LeaseClient,
-        lease_id: i64,
+        lease_id: LeaseId,
         lease_ttl: Duration,
     ) -> Result<()> {
-        let (mut keeper, mut stream) = lease_client.keep_alive(lease_id).await?;
+        let (mut keeper, mut stream) = lease_client.keep_alive(lease_id.0).await?;
         let (tx, mut rx) = tokio::sync::mpsc::channel::<Result<()>>(128);
         let fut_keep_alive = async move {
             loop {
@@ -842,7 +848,7 @@ impl ETCDGate {
     async fn _keep_alive(
         cancel_token: CancellationToken,
         mut lease_client: etcd_client::LeaseClient,
-        lease_id: i64,
+        lease_id: LeaseId,
         lease_ttl: Duration,
     ) {
         select! {
@@ -856,7 +862,7 @@ impl ETCDGate {
         // give some time to shut everything else down.
         debug!("Waiting {:#?} before revoking lease.", wait_time);
         tokio::time::sleep(lease_ttl / 10).await;
-        if let Err(err) = lease_client.revoke(lease_id).await {
+        if let Err(err) = lease_client.revoke(lease_id.0).await {
             warn!("Revoking lease failed with: {}.", err);
         } else {
             debug!("Lease revoked.");
@@ -867,7 +873,7 @@ impl ETCDGate {
     async fn _get_lease(&mut self) -> Result<()> {
         let mut opts = LeaseGrantOptions::new();
         if let Some(lease_id) = self.config.lease_id {
-            opts = opts.with_id(lease_id);
+            opts = opts.with_id(lease_id.0);
         }
         let grant_res = self
             ._client_mut()?
@@ -881,7 +887,7 @@ impl ETCDGate {
 
         let lease_id = grant_resp.id();
         let lease_ttl = grant_resp.ttl() as u64;
-        self.lease = Some(lease_id);
+        self.lease = Some(LeaseId(lease_id));
         info!(lease_id, lease_ttl, "Lease granted.");
         Ok(())
     }
@@ -891,6 +897,6 @@ impl ETCDGate {
 
 impl Debug for ETCDGate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ETCDGate").field("lease", &self.lease.unwrap_or(-1)).finish()
+        f.debug_struct("ETCDGate").field("lease", &self.lease.unwrap_or(LeaseId(-1)).0).finish()
     }
 }

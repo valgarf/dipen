@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use super::{
-    Arc, NetChange, NetChangeEvent, Place, PlaceId, Token, TokenId, Transition, TransitionId,
+    common::Revision, Arc, NetChange, NetChangeEvent, Place, PlaceId, Token, TokenId, Transition,
+    TransitionId,
 };
 use crate::{
     error::{PetriError, Result},
@@ -15,7 +16,7 @@ pub struct PetriNet {
     pub(super) transitions: HashMap<TransitionId, Transition>,
     pub(super) arcs: HashMap<(PlaceId, TransitionId), Arc>,
     tokens: HashMap<TokenId, Token>,
-    revision: u64,
+    revision: Revision,
 }
 
 macro_rules! get_place {
@@ -61,12 +62,12 @@ impl PetriNet {
         &self.tokens
     }
 
-    pub fn revision(&self) -> u64 {
+    pub fn revision(&self) -> Revision {
         self.revision
     }
 
     pub fn apply_change_event(&mut self, evt: NetChangeEvent) -> Result<HashSet<PlaceId>> {
-        assert!(self.revision < evt.revision || self.revision == 0);
+        assert!(self.revision < evt.revision || self.revision == Revision(0));
         let mut modified_places = HashSet::<PlaceId>::new();
         for change in evt.changes {
             modified_places.extend(self._apply_change(change)?);

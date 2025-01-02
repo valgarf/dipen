@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Display,
+};
 
 #[derive(Eq, PartialEq, Clone, Copy, PartialOrd, Ord, Hash, Debug)]
 pub struct PlaceId(pub u64);
@@ -6,6 +9,8 @@ pub struct PlaceId(pub u64);
 pub struct TransitionId(pub u64);
 #[derive(Eq, PartialEq, Clone, Copy, PartialOrd, Ord, Hash, Debug)]
 pub struct TokenId(pub u64);
+#[derive(Eq, PartialEq, Clone, Copy, PartialOrd, Ord, Hash, Debug, Default)]
+pub struct Revision(pub u64);
 
 #[derive(Clone)]
 pub struct Place {
@@ -162,5 +167,25 @@ impl Token {
 
     pub fn last_place(&self) -> PlaceId {
         self.last_place
+    }
+}
+
+impl From<i64> for Revision {
+    fn from(value: i64) -> Self {
+        // Note: revisions are not negative, no idea why etcd uses i64 here
+        Revision(value as u64)
+    }
+}
+
+impl From<u64> for Revision {
+    fn from(value: u64) -> Self {
+        // Note: revisions are not negative, no idea why etcd uses i64 here
+        Revision(value)
+    }
+}
+
+impl Display for Revision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
     }
 }

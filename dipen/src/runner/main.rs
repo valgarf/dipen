@@ -7,14 +7,14 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace, warn};
 
 use crate::error::{PetriError, Result};
-use crate::net::{ArcVariant, NetChangeEvent, PetriNet, PetriNetBuilder, PlaceId, TransitionId};
+use crate::net::{ArcVariant, NetChangeEvent, PetriNet, PetriNetBuilder, PlaceId, Revision, TransitionId};
 use crate::etcd::PlaceLock;
 use crate::etcd::ETCDGate;
 use super::{context::*, ExecutorRegistry};
 use super::transition::TransitionRunner;
 
-type SenderMap = HashMap<PlaceId,  tokio::sync::watch::Sender<u64>>;
-type ReceiverMap = HashMap<PlaceId, tokio::sync::watch::Receiver<u64>>;
+type SenderMap = HashMap<PlaceId,  tokio::sync::watch::Sender<Revision>>;
+type ReceiverMap = HashMap<PlaceId, tokio::sync::watch::Receiver<Revision>>;
 
 #[tracing::instrument(level = "info", skip_all, fields(region=etcd.config.region, node=etcd.config.node_name))]
 pub async fn run(
@@ -74,7 +74,7 @@ pub async fn run(
             .places()
             .keys()
             .map(|&pl_id| {
-                let (tx, rx) = tokio::sync::watch::channel(0);
+                let (tx, rx) = tokio::sync::watch::channel(Revision(0));
                 ((pl_id, tx), (pl_id, rx))
             })
             .unzip();
@@ -94,7 +94,7 @@ pub async fn run(
         }
 
         let transition_ids: Vec<TransitionId> = net.transitions().keys().copied().collect();
-        let (tx_revision, rx_revision) = tokio::sync::watch::channel(0u64);
+        let (tx_revision, rx_revision) = tokio::sync::watch::channel(Revision(0));
         let net_lock = Arc::new(RwLock::new(net));
         let net_read_guard = net_lock.read().await;
         let mut transition_tasks = JoinSet::<()>::new();
@@ -159,7 +159,7 @@ pub async fn run(
                 if net_guard.is_none() {
                     net_guard = Some(net_lock.write().await);
                 }
-                let mut revision = 0u64;
+                let mut revision = Revision(0);
                 for evt in event_buffer.drain(..) {
                     debug!("Change: {}", evt);
                     revision = evt.revision;

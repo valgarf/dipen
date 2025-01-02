@@ -2,7 +2,7 @@ use std::{fmt::Display, str::from_utf8};
 
 use unicode_segmentation::UnicodeSegmentation;
 
-use super::{PlaceId, TokenId, TransitionId};
+use super::{common::Revision, PlaceId, TokenId, TransitionId};
 
 #[derive(Debug)]
 pub enum NetChange {
@@ -21,18 +21,18 @@ pub enum NetChange {
 #[derive(Default, Debug)]
 pub struct NetChangeEvent {
     pub changes: Vec<NetChange>,
-    pub revision: u64,
+    pub revision: Revision,
 }
 
 impl NetChangeEvent {
-    pub fn new(revision: u64) -> Self {
+    pub fn new(revision: Revision) -> Self {
         NetChangeEvent { changes: Default::default(), revision }
     }
 }
 
 impl Display for NetChangeEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "revision={}, changes=[", self.revision)?;
+        write!(f, "revision={}, changes=[", self.revision.0)?;
         for (idx, change) in self.changes.iter().enumerate() {
             if idx == 0 {
                 write!(f, "{}", change)?;

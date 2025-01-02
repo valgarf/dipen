@@ -11,19 +11,19 @@ use tracing::{error, info, trace};
 use super::context::*;
 use super::dispatch::TransitionExecutorDispatch;
 use crate::error::{PetriError, Result};
-use crate::etcd::ETCDTransitionGate;
+use crate::etcd::{ETCDTransitionGate, FencingToken};
 use crate::etcd::{PlaceLock, PlaceLockData};
 use crate::exec::{CheckStartChoice, RunResult, RunResultData};
-use crate::net::{self, PlaceId, TokenId};
+use crate::net::{self, PlaceId, Revision, TokenId};
 
 pub(crate) struct TransitionRunner {
     pub cancel_token: CancellationToken,
     pub transition_id: net::TransitionId,
     pub etcd_gate: ETCDTransitionGate,
     pub net_lock: Arc<RwLock<net::PetriNet>>,
-    pub place_rx: HashMap<net::PlaceId, tokio::sync::watch::Receiver<u64>>,
+    pub place_rx: HashMap<net::PlaceId, tokio::sync::watch::Receiver<Revision>>,
     pub exec: Box<dyn TransitionExecutorDispatch>,
-    pub rx_revision: tokio::sync::watch::Receiver<u64>,
+    pub rx_revision: tokio::sync::watch::Receiver<Revision>,
     pub place_locks: HashMap<net::PlaceId, Arc<PlaceLock>>,
     // used for logging and other messages
     pub region_name: String,
@@ -62,7 +62,7 @@ impl TransitionRunner {
     async fn _run_transition(&mut self) -> Result<()> {
         self._create_executor().await;
         // loading event should have been handled before checking for transitions to cancel
-        TransitionRunner::_wait_for_revision(&mut self.rx_revision, 1).await?;
+        TransitionRunner::_wait_for_revision(&mut self.rx_revision, Revision(1)).await?;
         // We are just starting. If any token is still taken by our transitions, we need
         // to give it back to the input place. No one else should be running!
         self._cancel_running().await?;
@@ -115,8 +115,8 @@ impl TransitionRunner {
     }
 
     async fn _wait_for_revision(
-        rx_revision: &mut tokio::sync::watch::Receiver<u64>,
-        revision: u64,
+        rx_revision: &mut tokio::sync::watch::Receiver<Revision>,
+        revision: Revision,
     ) -> Result<()> {
         rx_revision
             .wait_for(move |&rev| rev >= revision)
@@ -243,7 +243,7 @@ impl TransitionRunner {
 
     async fn _lock<'a>(
         locks: &'a mut Vec<Arc<PlaceLock>>,
-        rx_revision: Option<&mut tokio::sync::watch::Receiver<u64>>,
+        rx_revision: Option<&mut tokio::sync::watch::Receiver<Revision>>,
     ) -> Result<Vec<MutexGuard<'a, PlaceLockData>>> {
         locks.sort_by_key(|pl_lock| pl_lock.place_id());
         let mut guards: Vec<MutexGuard<PlaceLockData>> = Vec::with_capacity(locks.len());
@@ -256,18 +256,20 @@ impl TransitionRunner {
         // The revision is taken from etcd if the lock was newly acquired. If some other task held
         // the lock before, it should have updated the revision to the last change it uploaded to
         // etcd.
-        let min_revision = guards.iter().map(|g| g.min_revision()).max().unwrap_or(0);
+        let min_revision = guards.iter().map(|g| g.min_revision()).max().unwrap_or(Revision(0));
         if let Some(rx_revision) = rx_revision {
             TransitionRunner::_wait_for_revision(rx_revision, min_revision).await?;
         }
         Ok(guards)
     }
 
-    fn _get_fencing_tokens<'a>(guards: &'a Vec<MutexGuard<PlaceLockData>>) -> Vec<&'a [u8]> {
+    fn _get_fencing_tokens<'a>(
+        guards: &'a Vec<MutexGuard<PlaceLockData>>,
+    ) -> Vec<&'a FencingToken> {
         guards.iter().map(|g| g.fencing_token()).collect()
     }
 
-    fn _release_locks(mut guards: Vec<MutexGuard<PlaceLockData>>, revision: u64) {
+    fn _release_locks(mut guards: Vec<MutexGuard<PlaceLockData>>, revision: Revision) {
         for g in &mut guards {
             g.set_min_revision(revision);
         }
@@ -276,8 +278,8 @@ impl TransitionRunner {
     async fn _start_transition(
         &mut self,
         take: &[(PlaceId, TokenId)],
-        fencing_tokens: Vec<&[u8]>,
-    ) -> Result<u64> {
+        fencing_tokens: Vec<&FencingToken>,
+    ) -> Result<Revision> {
         self.etcd_gate.start_transition(take.iter().copied(), &fencing_tokens).await
     }
 
@@ -323,8 +325,8 @@ impl TransitionRunner {
         &mut self,
         res: RunResultData,
         taken: &[(PlaceId, TokenId)],
-        fencing_tokens: Vec<&[u8]>,
-    ) -> Result<u64> {
+        fencing_tokens: Vec<&FencingToken>,
+    ) -> Result<Revision> {
         let placed_to_ids: HashSet<TokenId> =
             res.place.iter().map(|&(to_id, _, _, _)| to_id).collect();
         let destroy: HashSet<(PlaceId, TokenId)> =

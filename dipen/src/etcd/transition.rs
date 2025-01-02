@@ -2,29 +2,29 @@ use etcd_client::{Compare, CompareOp, DeleteOptions, KvClient, Txn, TxnOp};
 
 use crate::{
     error::{PetriError, Result},
-    net::{PlaceId, TokenId, TransitionId},
+    net::{PlaceId, Revision, TokenId, TransitionId},
 };
 
-use super::ETCDGate;
+use super::{ETCDGate, FencingToken, LeaseId};
 
 pub struct ETCDTransitionGate {
     pub(super) client: KvClient,
     pub(super) transition_id: TransitionId,
     pub(super) prefix: String,
-    pub(super) lease: i64,
+    pub(super) lease: LeaseId,
 }
 
 impl ETCDTransitionGate {
     pub async fn start_transition(
         &mut self,
         take: impl IntoIterator<Item = (PlaceId, TokenId)>,
-        fencing_tokens: &[&[u8]],
-    ) -> Result<u64> {
+        fencing_tokens: &[&FencingToken],
+    ) -> Result<Revision> {
         let txn = Txn::new()
             .when(
                 fencing_tokens
                     .iter()
-                    .map(|&fto| Compare::lease(fto, CompareOp::Equal, self.lease))
+                    .map(|&fto| Compare::lease(fto.0.clone(), CompareOp::Equal, self.lease.0))
                     .collect::<Vec<Compare>>(),
             )
             .and_then(
@@ -44,7 +44,8 @@ impl ETCDTransitionGate {
             Ok(res
                 .header()
                 .expect("Missing header from etcd in 'start_transition' call.")
-                .revision() as u64)
+                .revision()
+                .into())
         } else {
             Err(PetriError::InconsistentState(format!(
                 "Failed to execute transaction on etcd to start transition '{}' (lease lost?)",
@@ -58,12 +59,12 @@ impl ETCDTransitionGate {
         place: impl IntoIterator<Item = (TokenId, PlaceId, PlaceId, Vec<u8>)>,
         create: impl IntoIterator<Item = (PlaceId, Vec<u8>)>,
         destroy: impl IntoIterator<Item = (PlaceId, TokenId)>,
-        fencing_tokens: &[&[u8]],
-    ) -> Result<u64> {
+        fencing_tokens: &[&FencingToken],
+    ) -> Result<Revision> {
         // check if token is still at place? Should not happen if locks work correctly
         let cond = fencing_tokens
             .iter()
-            .map(|&fto| Compare::lease(fto, CompareOp::Equal, self.lease))
+            .map(|&fto| Compare::lease(fto.0.clone(), CompareOp::Equal, self.lease.0))
             .collect::<Vec<Compare>>();
 
         let mut new_tokens = vec![];
@@ -109,7 +110,7 @@ impl ETCDTransitionGate {
         }
         let header =
             resp.header().ok_or(PetriError::Other("header missing from etcd reply.".into()))?;
-        Ok(header.revision() as u64)
+        Ok(header.revision().into())
     }
 }
 
