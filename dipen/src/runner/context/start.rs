@@ -29,8 +29,7 @@ impl<'a> StartContext for StartContextStruct<'a> {
         place_id: PlaceId,
     ) -> impl Iterator<Item = impl crate::exec::StartTokenContext> {
         let net = self.net;
-        net.places()
-            .get(&place_id)
+        net.place(place_id)
             .unwrap()
             .token_ids()
             .iter()
@@ -42,7 +41,7 @@ impl<'a> StartContext for StartContextStruct<'a> {
         place_id: PlaceId,
     ) -> impl Iterator<Item = impl crate::exec::StartTakenTokenContext> {
         let net = self.net;
-        net.places().get(&place_id).unwrap().taken_token_ids().iter().map(
+        net.place(place_id).unwrap().taken_token_ids().iter().map(
             move |(&token_id, &transition_id)| StartTakenTokenContextStruct {
                 net,
                 token_id,
@@ -59,7 +58,7 @@ impl StartTokenContext for StartTokenContextStruct<'_> {
     }
 
     fn data(&self) -> &[u8] {
-        self.net.tokens().get(&self.token_id).unwrap().data()
+        self.net.token(self.token_id).unwrap().data()
     }
 
     fn place_id(&self) -> PlaceId {
@@ -73,7 +72,7 @@ impl StartTakenTokenContext for StartTakenTokenContextStruct<'_> {
     }
 
     fn data(&self) -> &[u8] {
-        self.net.tokens().get(&self.token_id).unwrap().data()
+        self.net.token(self.token_id).unwrap().data()
     }
 
     fn place_id(&self) -> PlaceId {

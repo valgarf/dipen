@@ -8,7 +8,6 @@ use tracing::{debug, trace, warn};
 
 use crate::error::{PetriError, Result};
 use crate::net::{ArcVariant, NetChangeEvent, PetriNet, PetriNetBuilder, PlaceId, Revision, TransitionId};
-use crate::etcd::PlaceLock;
 use crate::etcd::ETCDGate;
 use super::{context::*, ExecutorRegistry};
 use super::transition::TransitionRunner;
@@ -64,51 +63,44 @@ pub async fn run(
         let (tx, mut rx) = tokio::sync::mpsc::channel::<NetChangeEvent>(128);
         etcd.load_data(
             tx,
-            net.places().keys().copied().collect(),
-            net.transitions().keys().copied().collect(),
+            net.places().map(|t|t.0).collect(),
+            net.transitions().map(|t|t.0).collect(),
         )
         .await?;
 
         // start a runner for each transition
         let (pl_tx, pl_rx): (SenderMap, ReceiverMap) = net
             .places()
-            .keys()
-            .map(|&pl_id| {
+            .map(|(pl_id, _)| {
                 let (tx, rx) = tokio::sync::watch::channel(Revision(0));
                 ((pl_id, tx), (pl_id, rx))
             })
             .unzip();
         
-        let mut receivers = HashMap::<TransitionId,ReceiverMap>::new();
-        for (&(pl_id, tr_id), arc) in net.arcs() {
-            if arc.variant() == ArcVariant::Out {
-                continue;
-            }
-            receivers.entry(tr_id).or_default().insert(pl_id, pl_rx[&pl_id].clone());
-        }
-
-        let mut place_locks_tr: HashMap<TransitionId, HashMap<PlaceId, Arc<PlaceLock>>> = HashMap::new();
-        for &(pl_id, tr_id) in net.arcs().keys() {
-            let place_locks = place_locks_tr.entry(tr_id).or_default();
-            place_locks.insert(pl_id, etcd.place_lock(pl_id)?);
-        }
-
-        let transition_ids: Vec<TransitionId> = net.transitions().keys().copied().collect();
+        let transition_ids: Vec<TransitionId> = net.transitions().map(|t|t.0).collect();
         let (tx_revision, rx_revision) = tokio::sync::watch::channel(Revision(0));
         let net_lock = Arc::new(RwLock::new(net));
         let net_read_guard = net_lock.read().await;
         let mut transition_tasks = JoinSet::<()>::new();
         for transition_id in transition_ids {
-            let tr_name = net_read_guard.transitions().get(&transition_id).unwrap().name();
+            let mut place_locks = HashMap::new();
+            let mut receivers = HashMap::new();
+            for (pl_id, arc) in net_read_guard.arcs_for(transition_id) {
+                place_locks.insert(pl_id, etcd.place_lock(pl_id)?);
+                if arc.variant() != ArcVariant::Out {
+                    receivers.insert(pl_id, pl_rx[&pl_id].clone());
+                }                
+            }
+            let tr_name = net_read_guard.transition(transition_id).unwrap().name();
             let runner = TransitionRunner {
                 cancel_token: cancel_token.clone(), 
                 net_lock:Arc::clone(&net_lock), 
                 etcd_gate: etcd.create_transition_gate(transition_id)?, 
                 transition_id,
-                place_rx: receivers.remove(&transition_id).unwrap(),
+                place_rx: receivers,
                 exec: executors.dispatcher.get(tr_name).unwrap().clone_empty(), 
                 rx_revision: rx_revision.clone(), 
-                place_locks: place_locks_tr.remove(&transition_id).unwrap(), 
+                place_locks,
                 region_name: region_name.clone(),
                 node_name: node_name.clone(),
                 transition_name: tr_name.into(),

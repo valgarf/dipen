@@ -161,7 +161,7 @@ impl PetriNetBuilder {
             let tr_id = ids.transitions.get(tr_name).ok_or(PetriError::ValueError(format!(
                 "Transition '{tr_name}' not found in provided ids."
             )))?;
-            net.arcs.insert((*pl_id, *tr_id), arc_data.clone());
+            net.arcs.insert((*tr_id, *pl_id), arc_data.clone());
         }
         Ok(net)
     }

@@ -129,15 +129,9 @@ impl TransitionRunner {
         let net = self.net_lock.read().await;
         let ctx = create::CreateContextStruct {
             net: &net,
-            transition_name: net.transitions().get(&self.transition_id).unwrap().name(),
+            transition_name: net.transition(self.transition_id).unwrap().name(),
             transition_id: self.transition_id,
-            // TODO: optimize by storing all arcs corresnponding to one transition
-            arcs: net
-                .arcs()
-                .iter()
-                .filter(|(&(_, tr_id), _)| tr_id == self.transition_id)
-                .map(|(&(pl_id, _), arc)| (pl_id, arc))
-                .collect(),
+            arcs: net.arcs_for(self.transition_id).collect(),
             registry_data: None, // will be replaced by the dispatcher
         };
         self.exec.create(ctx);
@@ -145,7 +139,7 @@ impl TransitionRunner {
 
     async fn _cancel_running(&mut self) -> Result<()> {
         let net = self.net_lock.read().await;
-        let token_ids = net.transitions().get(&self.transition_id).unwrap().token_ids();
+        let token_ids = net.transition(self.transition_id).unwrap().token_ids();
         if !token_ids.is_empty() {
             info!(
                 "Cancelled transition on startup, returning tokens: [{}]",
@@ -159,7 +153,7 @@ impl TransitionRunner {
                 place: token_ids
                     .iter()
                     .map(|&to_id| {
-                        let to = net.tokens().get(&to_id).unwrap();
+                        let to = net.token(to_id).unwrap();
                         (to_id, to.last_place(), to.last_place(), to.data().into())
                     })
                     .collect(),
@@ -291,7 +285,7 @@ impl TransitionRunner {
                 .map(|&(orig_pl_id, to_id)| run::RunTokenContextStruct {
                     token_id: to_id,
                     orig_place_id: orig_pl_id,
-                    data: net.tokens().get(&to_id).unwrap().data().into(),
+                    data: net.token(to_id).unwrap().data().into(),
                 })
                 .collect(),
         })
@@ -314,7 +308,7 @@ impl TransitionRunner {
         let net = self.net_lock.read().await;
         let mut locks = target_places
             .iter()
-            .filter(|&pl_id| net.places().get(pl_id).map(|pl| pl.output_locking()).unwrap_or(true))
+            .filter(|&pl_id| net.place(*pl_id).map(|pl| pl.output_locking()).unwrap_or(true))
             .map(|pl_id| Arc::clone(self.place_locks.get(pl_id).unwrap()))
             .collect::<Vec<_>>();
         locks.sort_by_key(|pl_lock| pl_lock.place_id());

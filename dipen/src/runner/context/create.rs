@@ -33,7 +33,7 @@ impl<'a> CreateContext for CreateContextStruct<'a> {
     fn arcs(&self) -> impl Iterator<Item = impl crate::exec::CreateArcContext> {
         self.arcs.iter().map(|&(pl_id, arc)| CreateArcContextStruct {
             arc,
-            place: self.net.places().get(&pl_id).unwrap(),
+            place: self.net.place(pl_id).unwrap(),
             place_id: pl_id,
         })
     }

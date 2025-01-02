@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use super::{
     common::Revision, Arc, NetChange, NetChangeEvent, Place, PlaceId, Token, TokenId, Transition,
@@ -14,7 +14,7 @@ pub struct PetriNet {
     // TODO: also keep a reference to currently 'taken' tokens in each place
     pub(super) places: HashMap<PlaceId, Place>,
     pub(super) transitions: HashMap<TransitionId, Transition>,
-    pub(super) arcs: HashMap<(PlaceId, TransitionId), Arc>,
+    pub(super) arcs: BTreeMap<(TransitionId, PlaceId), Arc>,
     tokens: HashMap<TokenId, Token>,
     revision: Revision,
 }
@@ -46,26 +46,45 @@ macro_rules! assert_state {
 }
 
 impl PetriNet {
-    pub fn places(&self) -> &HashMap<PlaceId, Place> {
-        &self.places
+    pub fn place(&self, pl_id: PlaceId) -> Option<&Place> {
+        self.places.get(&pl_id)
     }
 
-    pub fn transitions(&self) -> &HashMap<TransitionId, Transition> {
-        &self.transitions
+    pub fn places(&self) -> impl Iterator<Item = (PlaceId, &Place)> {
+        self.places.iter().map(|(&pl_id, pl)| (pl_id, pl))
     }
 
-    pub fn arcs(&self) -> &HashMap<(PlaceId, TransitionId), Arc> {
-        &self.arcs
+    pub fn transition(&self, tr_id: TransitionId) -> Option<&Transition> {
+        self.transitions.get(&tr_id)
     }
 
-    pub fn tokens(&self) -> &HashMap<TokenId, Token> {
-        &self.tokens
+    pub fn transitions(&self) -> impl Iterator<Item = (TransitionId, &Transition)> {
+        self.transitions.iter().map(|(&tr_id, tr)| (tr_id, tr))
+    }
+
+    pub fn arcs(&self) -> impl Iterator<Item = (TransitionId, PlaceId, &Arc)> {
+        self.arcs.iter().map(|(&(tr_id, pl_id), arc)| (tr_id, pl_id, arc))
+    }
+
+    pub fn arcs_for(&self, tr_id: TransitionId) -> impl Iterator<Item = (PlaceId, &Arc)> {
+        self.arcs
+            .range((tr_id, PlaceId(0))..(TransitionId(tr_id.0 + 1), PlaceId(0)))
+            .map(|(&(_, pl_id), arc)| (pl_id, arc))
+    }
+
+    pub fn token(&self, to_id: TokenId) -> Option<&Token> {
+        self.tokens.get(&to_id)
+    }
+
+    pub fn tokens(&self) -> impl Iterator<Item = (TokenId, &Token)> {
+        self.tokens.iter().map(|(&to_id, to)| (to_id, to))
     }
 
     pub fn revision(&self) -> Revision {
         self.revision
     }
 
+    /// apply a change event (with a list of changes) to the net and return modified places
     pub fn apply_change_event(&mut self, evt: NetChangeEvent) -> Result<HashSet<PlaceId>> {
         assert!(self.revision < evt.revision || self.revision == Revision(0));
         let mut modified_places = HashSet::<PlaceId>::new();
@@ -74,15 +93,6 @@ impl PetriNet {
         }
         self.revision = evt.revision;
         Ok(modified_places)
-
-        // // TODO could be optimized by storing all transitions connected to a place
-        // let mut check_transitions = HashSet::<TransitionId>::new();
-        // for (&(place_id, transition_id), arc) in &self.arcs {
-        //     if arc.variant() != ArcVariant::Out && modified_places.contains(&place_id) {
-        //         check_transitions.insert(transition_id);
-        //     }
-        // }
-        // Ok(check_transitions)
     }
 
     /// apply a change to the net and return modified places

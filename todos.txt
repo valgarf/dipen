@@ -1,5 +1,5 @@
 
-- new type for lease / revision / fencing token
+
 - store arcs for transition / place on net (BTree with transition id first?)
 - python bindings
 - tests (with multiprocessing?)
