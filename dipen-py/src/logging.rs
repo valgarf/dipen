@@ -1,12 +1,7 @@
 use std::{collections::HashMap, ffi::CStr, str::FromStr};
 
 use dipen::error::PetriError;
-use pyo3::{
-    ffi::c_str,
-    intern,
-    prelude::*,
-    types::PyDict,
-};
+use pyo3::{ffi::c_str, intern, prelude::*, types::PyDict};
 
 use dipen::Result;
 use tracing::Level;
@@ -212,6 +207,10 @@ impl RustTracingToLoguru {
         Ok(())
     }
 
+    fn get_target_log_level(&mut self, prefix: &str) -> Option<&'static str> {
+        self.target_levels.get(prefix).map(|l| l.as_str())
+    }
+
     fn install(&self, py: Python<'_>) -> PyResult<()> {
         tracing_subscriber::registry()
             .with(self.clone_ref(py))
@@ -236,16 +235,3 @@ fn _parse_log_level(value: &str) -> Result<Level> {
         Level::from_str(value).map_err(|_| PetriError::Other("Log level must be one of".into()))
     }
 }
-
-// let min_level = Level::INFO;
-//     let loguru = m.py().import("loguru")?;
-//     let module = PyModule::from_code(m.py(), CODE, c_str!(""), c_str!(""))?;
-//     let logger = loguru.getattr("logger")?.call_method1("patch", (module.getattr("patch")?,))?;
-//     tracing_subscriber::registry()
-//         .with(CustomLayer {
-//             global_level: min_level,
-//             target_levels: HashMap::from_iter([("dipen".into(), Level::DEBUG)]),
-//             logger: logger.into(),
-//         })
-//         .try_init()
-//         .map_err(|e| PyPetriError(PetriError::Other(e.to_string())))?;

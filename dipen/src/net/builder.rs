@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+};
 
 use tracing::debug;
 
@@ -6,7 +9,7 @@ use crate::error::{PetriError, Result};
 
 use super::{Arc, PetriNet, Place, PlaceId, Transition, TransitionId};
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct PetriNetBuilder {
     places: HashMap<String, Place>,
     transitions: HashMap<String, Transition>,
@@ -20,12 +23,12 @@ pub struct PetriNetIds {
 }
 
 impl PetriNetBuilder {
-    pub fn load(_path: &str) -> Result<PetriNetBuilder> {
+    pub fn load(_path: &Path) -> Result<PetriNetBuilder> {
         Err(PetriError::NotImplemented())
         // TODO
     }
 
-    pub fn save(_path: &str) -> Result<()> {
+    pub fn save(_path: &Path) -> Result<()> {
         Err(PetriError::NotImplemented())
         // TODO
     }
@@ -49,15 +52,15 @@ impl PetriNetBuilder {
     /// Insert place into this petri net.
     ///
     /// Returns the existing place for this name, or None if the name is not in use.
-    pub fn insert_place(&mut self, place: Place) -> Result<Option<Place>> {
-        Ok(self.places.insert(place.name().to_string(), place))
+    pub fn insert_place(&mut self, place: Place) -> Option<Place> {
+        self.places.insert(place.name().to_string(), place)
     }
 
     /// Insert transition into this petri net.
     ///
     /// Returns the existing transition for this name, or None if the name is not in use.
-    pub fn insert_transition(&mut self, transition: Transition) -> Result<Option<Transition>> {
-        Ok(self.transitions.insert(transition.name().to_string(), transition))
+    pub fn insert_transition(&mut self, transition: Transition) -> Option<Transition> {
+        self.transitions.insert(transition.name().to_string(), transition)
     }
 
     /// Insert arc into this petri net.
@@ -102,7 +105,7 @@ impl PetriNetBuilder {
         let mut result = PetriNetBuilder::default();
         let mut place_names = HashSet::<&str>::new();
         for tr_name in &transition_names {
-            result.insert_transition(self.transitions.get(tr_name).unwrap().clone()).unwrap();
+            result.insert_transition(self.transitions.get(tr_name).unwrap().clone());
             // Note: if these unwraps panic, we have a logic error here somewhere
         }
         for ((pl_name, tr_name), arc) in &self.arcs {
@@ -110,7 +113,7 @@ impl PetriNetBuilder {
                 continue;
             }
             if !place_names.contains(pl_name.as_str()) {
-                result.insert_place(self.places.get(pl_name).unwrap().clone()).unwrap();
+                result.insert_place(self.places.get(pl_name).unwrap().clone());
                 // Note: if these unwraps panic, we have a logic error here somewhere
                 place_names.insert(pl_name);
             }

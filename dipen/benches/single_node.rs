@@ -66,17 +66,17 @@ async fn run_benchmark(size: u64, iterations: u16) -> Duration {
             let tr1 = format!("tr{i}-1");
             let tr2 = format!("tr{i}-2");
             let tr_init = format!("tr{i}-init");
-            net.insert_place(net::Place::new(&pl1, false))?;
-            net.insert_place(net::Place::new(&pl2, false))?;
-            net.insert_transition(net::Transition::new(&tr1, "region-1"))?;
-            net.insert_transition(net::Transition::new(&tr2, "region-1"))?;
-            net.insert_arc(net::Arc::new(&pl1, &tr1, net::ArcVariant::In, "".into()))?;
-            net.insert_arc(net::Arc::new(&pl2, &tr1, net::ArcVariant::Out, "".into()))?;
-            net.insert_arc(net::Arc::new(&pl2, &tr2, net::ArcVariant::In, "".into()))?;
-            net.insert_arc(net::Arc::new(&pl1, &tr2, net::ArcVariant::Out, "".into()))?;
-            net.insert_transition(net::Transition::new(&tr_init, "region-1"))?;
-            net.insert_arc(net::Arc::new(&pl1, &tr_init, net::ArcVariant::InOut, "".into()))?;
-            net.insert_arc(net::Arc::new(&pl2, &tr_init, net::ArcVariant::In, "".into()))?;
+            net.insert_place(net::Place::new(&pl1, false));
+            net.insert_place(net::Place::new(&pl2, false));
+            net.insert_transition(net::Transition::new(&tr1, "region-1"));
+            net.insert_transition(net::Transition::new(&tr2, "region-1"));
+            net.insert_arc(net::Arc::new(&pl1, &tr1, net::ArcVariant::In, ""))?;
+            net.insert_arc(net::Arc::new(&pl2, &tr1, net::ArcVariant::Out, ""))?;
+            net.insert_arc(net::Arc::new(&pl2, &tr2, net::ArcVariant::In, ""))?;
+            net.insert_arc(net::Arc::new(&pl1, &tr2, net::ArcVariant::Out, ""))?;
+            net.insert_transition(net::Transition::new(&tr_init, "region-1"));
+            net.insert_arc(net::Arc::new(&pl1, &tr_init, net::ArcVariant::InOut, ""))?;
+            net.insert_arc(net::Arc::new(&pl2, &tr_init, net::ArcVariant::In, ""))?;
             executors.register::<common::transitions::Move>(&tr1, None);
             executors.register::<common::transitions::Move>(&tr2, None);
             executors

@@ -21,9 +21,9 @@ pub struct Place {
 }
 
 impl Place {
-    pub fn new<S: AsRef<str>>(name: S, output_locking: bool) -> Self {
+    pub fn new(name: impl Into<String>, output_locking: bool) -> Self {
         Place {
-            name: name.as_ref().to_string(),
+            name: name.into(),
             token_ids: Default::default(),
             taken_token_ids: Default::default(),
             output_locking,
@@ -55,12 +55,8 @@ pub struct Transition {
 }
 
 impl Transition {
-    pub fn new<S1: AsRef<str>, S2: AsRef<str>>(name: S1, region: S2) -> Self {
-        Transition {
-            name: name.as_ref().to_string(),
-            region: region.as_ref().to_string(),
-            token_ids: Default::default(),
-        }
+    pub fn new(name: impl Into<String>, region: impl Into<String>) -> Self {
+        Transition { name: name.into(), region: region.into(), token_ids: Default::default() }
     }
 
     pub fn name(&self) -> &str {
@@ -111,18 +107,13 @@ pub struct Arc {
 }
 
 impl Arc {
-    pub fn new<S1: AsRef<str>, S2: AsRef<str>>(
-        place: S1,
-        transition: S2,
+    pub fn new(
+        place: impl Into<String>,
+        transition: impl Into<String>,
         variant: ArcVariant,
-        name: String,
+        name: impl Into<String>,
     ) -> Self {
-        Arc {
-            place: place.as_ref().to_string(),
-            transition: transition.as_ref().to_string(),
-            variant,
-            name,
-        }
+        Arc { place: place.into(), transition: transition.into(), variant, name: name.into() }
     }
 
     pub fn place(&self) -> &str {

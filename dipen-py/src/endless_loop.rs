@@ -3,8 +3,7 @@ use std::sync::Arc;
 use dipen::{
     error::Result as PetriResult,
     etcd::{ETCDConfigBuilder, ETCDGate},
-    net,
-    net::{ArcVariant, PetriNetBuilder, Place, Transition},
+    net::PetriNetBuilder,
     runner::ExecutorRegistry,
 };
 use tokio::{runtime::Runtime, signal};
@@ -14,8 +13,8 @@ use tracing::{error, info, warn};
 #[path = "common/mod.rs"]
 mod common;
 
-#[tracing::instrument(level = "info")]
-async fn run() -> PetriResult<()> {
+#[tracing::instrument(level = "info", skip(net))]
+async fn run(net: Arc<PetriNetBuilder>) -> PetriResult<()> {
     let shutdown_token = CancellationToken::new();
     let shutdown_token_clone = shutdown_token.clone();
     tokio::spawn(async move {
@@ -30,21 +29,7 @@ async fn run() -> PetriResult<()> {
         shutdown_token_clone.cancel();
     });
 
-    let mut net = PetriNetBuilder::default();
-
     let mut executors = ExecutorRegistry::new();
-
-    net.insert_place(Place::new("pl1", true))?;
-    net.insert_place(Place::new("pl2", true))?;
-    net.insert_transition(Transition::new("tr1", "region-1"))?;
-    net.insert_transition(Transition::new("tr2", "region-1"))?;
-    net.insert_arc(net::Arc::new("pl1", "tr1", ArcVariant::In, "".into()))?;
-    net.insert_arc(net::Arc::new("pl2", "tr1", ArcVariant::Out, "".into()))?;
-    net.insert_arc(net::Arc::new("pl2", "tr2", ArcVariant::In, "".into()))?;
-    net.insert_arc(net::Arc::new("pl1", "tr2", ArcVariant::Out, "".into()))?;
-    net.insert_transition(Transition::new("tr-init", "region-1"))?;
-    net.insert_arc(net::Arc::new("pl1", "tr-init", ArcVariant::OutCond, "".into()))?;
-    net.insert_arc(net::Arc::new("pl2", "tr-init", ArcVariant::Cond, "".into()))?;
     executors.register::<common::transitions::DelayedMove>("tr1", None);
     executors.register::<common::transitions::DelayedMove>("tr2", None);
     executors.register::<common::transitions::Initialize>("tr-init", None);
@@ -70,16 +55,7 @@ async fn run() -> PetriResult<()> {
     Ok(())
 }
 
-pub fn main() -> PetriResult<()> {
+pub fn main(net: Arc<PetriNetBuilder>) -> PetriResult<()> {
     let rt = Runtime::new().expect("Failed to create tokio runtime");
-    // tracing_subscriber::fmt()
-    //     .with_span_events(
-    //         tracing_subscriber::fmt::format::FmtSpan::CLOSE
-    //             | tracing_subscriber::fmt::format::FmtSpan::NEW,
-    //     )
-    //     .compact()
-    //     .with_env_filter(EnvFilter::try_new("info,dipen=debug").unwrap())
-    //     .init();
-
-    rt.block_on(run())
+    rt.block_on(run(net))
 }

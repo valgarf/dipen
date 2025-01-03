@@ -35,17 +35,17 @@ async fn run() -> PetriResult<()> {
 
     let mut executors = ExecutorRegistry::new();
 
-    net.insert_place(Place::new("pl1", true))?;
-    net.insert_place(Place::new("pl2", true))?;
-    net.insert_transition(Transition::new("tr1", "region-1"))?;
-    net.insert_transition(Transition::new("tr2", "region-1"))?;
-    net.insert_arc(net::Arc::new("pl1", "tr1", ArcVariant::In, "".into()))?;
-    net.insert_arc(net::Arc::new("pl2", "tr1", ArcVariant::Out, "".into()))?;
-    net.insert_arc(net::Arc::new("pl2", "tr2", ArcVariant::In, "".into()))?;
-    net.insert_arc(net::Arc::new("pl1", "tr2", ArcVariant::Out, "".into()))?;
-    net.insert_transition(Transition::new("tr-init", "region-1"))?;
-    net.insert_arc(net::Arc::new("pl1", "tr-init", ArcVariant::OutCond, "".into()))?;
-    net.insert_arc(net::Arc::new("pl2", "tr-init", ArcVariant::Cond, "".into()))?;
+    net.insert_place(Place::new("pl1", true));
+    net.insert_place(Place::new("pl2", true));
+    net.insert_transition(Transition::new("tr1", "region-1"));
+    net.insert_transition(Transition::new("tr2", "region-1"));
+    net.insert_arc(net::Arc::new("pl1", "tr1", ArcVariant::In, ""))?;
+    net.insert_arc(net::Arc::new("pl2", "tr1", ArcVariant::Out, ""))?;
+    net.insert_arc(net::Arc::new("pl2", "tr2", ArcVariant::In, ""))?;
+    net.insert_arc(net::Arc::new("pl1", "tr2", ArcVariant::Out, ""))?;
+    net.insert_transition(Transition::new("tr-init", "region-1"));
+    net.insert_arc(net::Arc::new("pl1", "tr-init", ArcVariant::OutCond, ""))?;
+    net.insert_arc(net::Arc::new("pl2", "tr-init", ArcVariant::Cond, ""))?;
     executors.register::<common::transitions::DelayedMove>("tr1", None);
     executors.register::<common::transitions::DelayedMove>("tr2", None);
     executors.register::<common::transitions::Initialize>("tr-init", None);
