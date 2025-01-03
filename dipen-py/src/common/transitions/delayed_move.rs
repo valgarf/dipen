@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::sync::OnceLock;
 
 use dipen::{
     exec::{
@@ -7,6 +7,8 @@ use dipen::{
     },
     net::{PlaceId, TransitionId},
 };
+use pyo3::prelude::*;
+use pyo3_async_runtimes::{into_future_with_locals, TaskLocals};
 use tracing::info;
 
 pub struct DelayedMove {
@@ -16,6 +18,8 @@ pub struct DelayedMove {
     tr_name: String,
     delete: bool,
 }
+
+pub static RUNNING_LOOP: OnceLock<PyObject> = OnceLock::new();
 
 impl TransitionExecutor for DelayedMove {
     fn validate(ctx: &impl dipen::exec::ValidateContext) -> ValidationResult
@@ -62,7 +66,17 @@ impl TransitionExecutor for DelayedMove {
 
     async fn run(&mut self, ctx: &mut impl dipen::exec::RunContext) -> RunResult {
         info!("Running transition {} ({})", self.tr_name, self.tr_id.0);
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        // tokio::time::sleep(Duration::from_secs(1)).await;
+        let fut = Python::with_gil(|py| {
+            // convert asyncio.sleep into a Rust Future
+            let asyncio = py.import("asyncio")?;
+            let awaitable = asyncio.call_method1("sleep", (1.into_pyobject(py).unwrap(),))?;
+            let locals = TaskLocals::new(RUNNING_LOOP.get().unwrap().bind(py).clone());
+            into_future_with_locals(&locals, awaitable)
+        })
+        .expect("TODO: error handling for python calls");
+
+        fut.await.expect("TODO error handling for python future");
         let mut result = RunResult::build();
         if !self.delete {
             for to in ctx.tokens() {

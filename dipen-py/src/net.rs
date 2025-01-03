@@ -45,6 +45,24 @@ impl From<ArcVariant> for PyArcVariant {
 }
 
 #[pymethods]
+impl PyArcVariant {
+    /// True for all incoming arcs (In | InOut)
+    pub fn is_in(&self) -> bool {
+        [Self::In, Self::InOut].contains(self)
+    }
+
+    /// True for all outgoing arcs (Out | InOut | OutCond)
+    pub fn is_out(&self) -> bool {
+        [Self::Out, Self::InOut, Self::OutCond].contains(self)
+    }
+
+    /// True for all arcs usable as condition (In | InOut | Cond | OutCond)
+    pub fn is_cond(&self) -> bool {
+        [Self::In, Self::InOut, Self::Cond, Self::OutCond].contains(self)
+    }
+}
+
+#[pymethods]
 impl PyPetriNetBuilder {
     #[new]
     fn new() -> Self {

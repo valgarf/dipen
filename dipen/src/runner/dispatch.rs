@@ -7,7 +7,7 @@ use crate::exec::{CheckStartResult, RunResult, TransitionExecutor, ValidationRes
 
 pub trait TransitionExecutorDispatch: Send + Sync {
     fn clone_empty(&self) -> Box<dyn TransitionExecutorDispatch>;
-    fn validate(&self, ctx: &validate::ValidateContextStruct) -> ValidationResult;
+    fn validate(&self, ctx: &mut validate::ValidateContextStruct) -> ValidationResult;
     fn create(&mut self, ctx: create::CreateContextStruct);
     fn check_start(&mut self, ctx: &mut start::StartContextStruct) -> CheckStartResult;
     fn run<'a, 'b>(
@@ -28,7 +28,8 @@ impl<T: TransitionExecutor + Send + Sync + 'static> TransitionExecutorDispatch
     fn clone_empty(&self) -> Box<dyn TransitionExecutorDispatch> {
         Box::new(Self { executor: None, data: self.data.clone() })
     }
-    fn validate(&self, ctx: &validate::ValidateContextStruct) -> ValidationResult {
+    fn validate(&self, ctx: &mut validate::ValidateContextStruct) -> ValidationResult {
+        ctx.registry_data = self.data.clone();
         T::validate(ctx)
     }
 

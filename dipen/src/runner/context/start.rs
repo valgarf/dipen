@@ -3,6 +3,7 @@ use crate::net::{PetriNet, PlaceId, TokenId, TransitionId};
 
 pub struct StartContextStruct<'a> {
     net: &'a PetriNet,
+    transition_id: TransitionId,
 }
 
 pub struct StartTokenContextStruct<'a> {
@@ -19,8 +20,8 @@ pub struct StartTakenTokenContextStruct<'a> {
 }
 
 impl<'a> StartContextStruct<'a> {
-    pub fn new(net: &'a PetriNet) -> Self {
-        Self { net }
+    pub fn new(net: &'a PetriNet, transition_id: TransitionId) -> Self {
+        Self { net, transition_id }
     }
 }
 impl<'a> StartContext for StartContextStruct<'a> {
@@ -49,6 +50,16 @@ impl<'a> StartContext for StartContextStruct<'a> {
                 place_id,
             },
         )
+    }
+
+    fn tokens(&self) -> impl Iterator<Item = impl StartTokenContext> {
+        let net = self.net;
+        net.arcs_for(self.transition_id).flat_map(move |(pl_id, _)| self.tokens_at(pl_id))
+    }
+
+    fn taken_tokens(&self) -> impl Iterator<Item = impl StartTakenTokenContext> {
+        let net = self.net;
+        net.arcs_for(self.transition_id).flat_map(move |(pl_id, _)| self.taken_tokens_at(pl_id))
     }
 }
 

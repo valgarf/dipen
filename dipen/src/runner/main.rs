@@ -36,13 +36,14 @@ pub async fn run(
         // TODO: could be optimized by going through all the arcs once and storing the relevant ones
         // for each transition.
         let arcs = net_builder.arcs().values().filter(|a| {a.transition() == tr_name}).collect::<Vec<_>>();
-        let ctx = validate::ValidateContextStruct{
+        let mut ctx = validate::ValidateContextStruct{
             net: &net_builder,
             transition_name: tr_name,
-            arcs
+            arcs,
+            registry_data: None, // will be replaced by the dispatcher
         };
         if let Some(exec) = executors.dispatcher.get(tr_name) {
-            let res = exec.validate(&ctx);
+            let res = exec.validate(&mut ctx);
             if let Some(reason) = res.reason() {
                 return Err(PetriError::ConfigError(format!("Validation for transition {} failed with reason: {}.", tr_name, reason)));
             }

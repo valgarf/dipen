@@ -12,7 +12,7 @@ pub trait RunTokenContext: Send + Sync {
 pub trait RunContext: Send + Sync {
     fn tokens(&self) -> impl Iterator<Item = &impl RunTokenContext> + Send + Sync;
 }
-
+#[derive(Clone)]
 pub struct RunResult {
     place: Vec<(TokenId, PlaceId, PlaceId, Vec<u8>)>,
     create: Vec<(PlaceId, Vec<u8>)>,

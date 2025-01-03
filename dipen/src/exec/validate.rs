@@ -1,3 +1,5 @@
+use std::{any::Any, sync::Arc};
+
 use crate::net::ArcVariant;
 
 pub trait ValidatePlaceContext {
@@ -37,20 +39,38 @@ impl ValidationResult {
 }
 pub trait ValidateContext {
     fn transition_name(&self) -> &str;
-    fn arcs(&self) -> impl Iterator<Item = impl ValidateArcContext>;
-    fn arcs_in(&self) -> impl Iterator<Item = impl ValidateArcContext> {
+    fn arcs(&self) -> impl Iterator<Item = impl ValidateArcContext>
+    where
+        Self: Sized;
+    fn arcs_in(&self) -> impl Iterator<Item = impl ValidateArcContext>
+    where
+        Self: Sized,
+    {
         self.arcs().filter(|a| a.variant().is_in())
     }
-    fn arcs_out(&self) -> impl Iterator<Item = impl ValidateArcContext> {
+    fn arcs_out(&self) -> impl Iterator<Item = impl ValidateArcContext>
+    where
+        Self: Sized,
+    {
         self.arcs().filter(|a| a.variant().is_out())
     }
-    fn arcs_cond(&self) -> impl Iterator<Item = impl ValidateArcContext> {
+    fn arcs_cond(&self) -> impl Iterator<Item = impl ValidateArcContext>
+    where
+        Self: Sized,
+    {
         self.arcs().filter(|a| a.variant().is_cond())
     }
-    fn arcs_by_name(&self, name: &str) -> impl Iterator<Item = impl ValidateArcContext> {
+    fn arcs_by_name(&self, name: &str) -> impl Iterator<Item = impl ValidateArcContext>
+    where
+        Self: Sized,
+    {
         self.arcs().filter(move |a| a.arc_name() == name)
     }
-    fn arcs_by_place_name(&self, name: &str) -> impl Iterator<Item = impl ValidateArcContext> {
+    fn arcs_by_place_name(&self, name: &str) -> impl Iterator<Item = impl ValidateArcContext>
+    where
+        Self: Sized,
+    {
         self.arcs().filter(move |a| a.place_context().place_name() == name)
     }
+    fn registry_data(&self) -> Option<Arc<dyn Any + Send + Sync>>;
 }

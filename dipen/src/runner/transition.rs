@@ -211,7 +211,7 @@ impl TransitionRunner {
 
     async fn _check_start(&mut self) -> Result<Option<Vec<(PlaceId, TokenId)>>> {
         let net = self.net_lock.read().await;
-        let mut ctx = start::StartContextStruct::new(&net);
+        let mut ctx = start::StartContextStruct::new(&net, self.transition_id);
         match self.exec.check_start(&mut ctx).to_choice() {
             CheckStartChoice::Disabled(data) => {
                 self.run_data.wait_for = data.wait_for;

@@ -21,6 +21,8 @@ pub trait StartTakenTokenContext {
 }
 
 pub trait StartContext {
+    fn tokens(&self) -> impl Iterator<Item = impl StartTokenContext>;
+    fn taken_tokens(&self) -> impl Iterator<Item = impl StartTakenTokenContext>;
     fn tokens_at(&self, place_id: PlaceId) -> impl Iterator<Item = impl StartTokenContext>;
     fn taken_tokens_at(
         &self,
@@ -28,20 +30,24 @@ pub trait StartContext {
     ) -> impl Iterator<Item = impl StartTakenTokenContext>;
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct EnabledData {
     pub take: Vec<(PlaceId, TokenId)>,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct DisabledData {
     pub wait_for: Option<PlaceId>,
     pub auto_recheck: Duration,
 }
+
+#[derive(Clone)]
 pub struct CheckStartResult {
     choice: CheckStartChoice,
     // Note: fields not public to enforce the use of the builder
 }
+
+#[derive(Clone)]
 pub enum CheckStartChoice {
     Enabled(EnabledData),
     Disabled(DisabledData),

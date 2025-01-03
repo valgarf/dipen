@@ -1,40 +1,27 @@
 use std::sync::Arc;
 
 use dipen::{
-    error::Result as PetriResult,
-    etcd::{ETCDConfigBuilder, ETCDGate},
-    net::PetriNetBuilder,
-    runner::ExecutorRegistry,
+    error::Result as PetriResult, etcd::ETCDGate, net::PetriNetBuilder, runner::ExecutorRegistry,
 };
-use tokio::{runtime::Runtime, signal};
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 #[path = "common/mod.rs"]
-mod common;
+pub mod common;
 
-#[tracing::instrument(level = "info", skip(net))]
-pub async fn run_example(net: Arc<PetriNetBuilder>, etcd: ETCDGate) -> PetriResult<()> {
-    let shutdown_token = CancellationToken::new();
-    let shutdown_token_clone = shutdown_token.clone();
-    tokio::spawn(async move {
-        tokio::select! {
-            _ = signal::ctrl_c() => {
-                warn!("Shutting down. Ctrl+C pressed (or corresponding signal sent).")
-            },
-            _ = shutdown_token_clone.cancelled() => {
-                warn!("Shutting down. Shutdown token has been invoked (probably due to some previous error).")
-            },
-        }
-        shutdown_token_clone.cancel();
-    });
+#[tracing::instrument(level = "info", skip_all)]
+pub async fn run_example(
+    net: Arc<PetriNetBuilder>,
+    etcd: ETCDGate,
+    executors: ExecutorRegistry,
+    cancel_token: CancellationToken,
+) -> PetriResult<()> {
+    // let mut executors = ExecutorRegistry::new();
+    // executors.register::<common::transitions::DelayedMove>("tr1", None);
+    // executors.register::<common::transitions::DelayedMove>("tr2", None);
+    // executors.register::<common::transitions::Initialize>("tr-init", None);
 
-    let mut executors = ExecutorRegistry::new();
-    executors.register::<common::transitions::DelayedMove>("tr1", None);
-    executors.register::<common::transitions::DelayedMove>("tr2", None);
-    executors.register::<common::transitions::Initialize>("tr-init", None);
-
-    let run = dipen::runner::run(Arc::clone(&net), etcd, executors, shutdown_token.clone());
+    let run = dipen::runner::run(Arc::clone(&net), etcd, executors, cancel_token);
     match run.await {
         Ok(_) => {}
         Err(err) => {

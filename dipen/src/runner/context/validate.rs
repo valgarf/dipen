@@ -1,3 +1,6 @@
+use std::any::Any;
+use std::sync::Arc;
+
 use crate::exec::{ValidateArcContext, ValidateContext, ValidatePlaceContext};
 use crate::net::{self};
 
@@ -5,6 +8,7 @@ pub struct ValidateContextStruct<'a> {
     pub net: &'a net::PetriNetBuilder,
     pub transition_name: &'a str,
     pub arcs: Vec<&'a net::Arc>,
+    pub registry_data: Option<Arc<dyn Any + Send + Sync>>,
 }
 struct ValidateArcContextStruct<'a> {
     arc: &'a net::Arc,
@@ -24,6 +28,10 @@ impl<'a> ValidateContext for ValidateContextStruct<'a> {
             arc,
             place: self.net.places().get(arc.place()).unwrap(),
         })
+    }
+
+    fn registry_data(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+        self.registry_data.clone()
     }
 }
 
