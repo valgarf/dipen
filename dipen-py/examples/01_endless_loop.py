@@ -33,7 +33,13 @@ def main():
     net.insert_arc("pl1", "tr-init", dipen.ArcVariant.OutCond)
     net.insert_arc("pl2", "tr-init", dipen.ArcVariant.Cond)
 
-    dipen.run(net)  # type: ignore
+    etcd = dipen.ETCDGate(
+        endpoints=["localhost:2379"],
+        prefix="py-01-endless-loop/",
+        node_name="node1",
+        region="region-1",
+    )
+    dipen.run(net, etcd)
 
 
 if __name__ == "__main__":

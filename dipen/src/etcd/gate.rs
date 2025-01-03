@@ -38,7 +38,7 @@ pub struct ETCDGate {
     place_locks: HashMap<PlaceId, Arc<PlaceLock>>,
 }
 
-#[derive(Builder)]
+#[derive(Builder, Clone)]
 pub struct ETCDConfig {
     #[builder(setter(custom))]
     pub endpoints: Vec<String>,

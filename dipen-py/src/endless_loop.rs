@@ -14,7 +14,7 @@ use tracing::{error, info, warn};
 mod common;
 
 #[tracing::instrument(level = "info", skip(net))]
-async fn run(net: Arc<PetriNetBuilder>) -> PetriResult<()> {
+pub async fn run_example(net: Arc<PetriNetBuilder>, etcd: ETCDGate) -> PetriResult<()> {
     let shutdown_token = CancellationToken::new();
     let shutdown_token_clone = shutdown_token.clone();
     tokio::spawn(async move {
@@ -34,15 +34,6 @@ async fn run(net: Arc<PetriNetBuilder>) -> PetriResult<()> {
     executors.register::<common::transitions::DelayedMove>("tr2", None);
     executors.register::<common::transitions::Initialize>("tr-init", None);
 
-    let net = Arc::new(net);
-    let config = ETCDConfigBuilder::default()
-        .endpoints(["localhost:2379"])
-        .prefix("01-endless-loop/")
-        .node_name("node1")
-        .region("region-1")
-        .build()?;
-
-    let etcd = ETCDGate::new(config);
     let run = dipen::runner::run(Arc::clone(&net), etcd, executors, shutdown_token.clone());
     match run.await {
         Ok(_) => {}
@@ -53,9 +44,4 @@ async fn run(net: Arc<PetriNetBuilder>) -> PetriResult<()> {
 
     info!("Bye.");
     Ok(())
-}
-
-pub fn main(net: Arc<PetriNetBuilder>) -> PetriResult<()> {
-    let rt = Runtime::new().expect("Failed to create tokio runtime");
-    rt.block_on(run(net))
 }

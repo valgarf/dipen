@@ -1,4 +1,5 @@
 # Configure the rust logging from the 'tracing' package to be logged via loguru
+from datetime import timedelta
 from enum import Enum
 
 class RustTracingToLoguru:
@@ -12,7 +13,7 @@ class RustTracingToLoguru:
     # process
     def install(self) -> None: ...
 
-def run() -> None: ...
+def run(net: PetriNetBuilder, etcd: ETCDGate) -> None: ...
 
 class ArcVariant(Enum):
     In = ...
@@ -31,4 +32,17 @@ class PetriNetBuilder:
         transition: str,
         variant: ArcVariant,
         name: str = "",
+    ): ...
+
+class ETCDGate:
+    def __init__(
+        self,
+        endpoints,
+        prefix="",
+        node_name="default_node",
+        region="default",
+        lease_id=None,
+        lease_ttl=timedelta(seconds=10),
+        username=None,
+        password=None,
     ): ...
