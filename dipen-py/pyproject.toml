@@ -16,3 +16,6 @@ dependencies = [
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
+module-name = "dipen._dipen_py_internal"
+manifest-path = "./Cargo.toml"
+python-source = "python-src"

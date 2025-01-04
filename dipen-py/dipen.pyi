@@ -54,7 +54,6 @@ def start(
     :return: a RunHandle that allows to cancel / join on the runner.
     """
 
-# [pymethods]
 class RunHandle:
     def cancel(self) -> None:
         """

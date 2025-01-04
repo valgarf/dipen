@@ -25,9 +25,10 @@ use logging::RustTracingToLoguru;
 use net::{PyArcVariant, PyPetriNetBuilder};
 use pyo3::prelude::*;
 use registry::PyExecutorRegistry;
+use run::RunHandle;
 
 #[pymodule]
-fn dipen(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _dipen_py_internal(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run::start, m)?)?;
     m.add_class::<RustTracingToLoguru>()?;
     m.add_class::<PyPetriNetBuilder>()?;
@@ -50,5 +51,6 @@ fn dipen(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRunResult>()?;
     m.add_class::<PyRunResultBuilder>()?;
     m.add_class::<PyExecutorRegistry>()?;
+    m.add_class::<RunHandle>()?;
     Ok(())
 }
