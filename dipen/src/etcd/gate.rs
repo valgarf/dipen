@@ -860,12 +860,12 @@ impl ETCDGate {
         cancel_token.cancel();
         let wait_time = lease_ttl / 10;
         // give some time to shut everything else down.
-        debug!("Waiting {:#?} before revoking lease.", wait_time);
+        info!("Waiting {:#?} before revoking lease.", wait_time);
         tokio::time::sleep(lease_ttl / 10).await;
         if let Err(err) = lease_client.revoke(lease_id.0).await {
             warn!("Revoking lease failed with: {}.", err);
         } else {
-            debug!("Lease revoked.");
+            info!("Lease revoked.");
         }
     }
 

@@ -1,6 +1,5 @@
 mod asyncio;
 mod contexts;
-mod endless_loop;
 mod error;
 mod etcd;
 mod exec;
@@ -16,7 +15,9 @@ use contexts::{
         PyCheckStartResult, PyCheckStartResultBuilder, PyStartContext, PyStartTakenTokenContext,
         PyStartTokenContext,
     },
-    validate::{PyValidateArcContext, PyValidateContext, PyValidatePlaceContext},
+    validate::{
+        PyValidateArcContext, PyValidateContext, PyValidatePlaceContext, PyValidationResult,
+    },
 };
 use error::*;
 use etcd::PyETCDGateConfig;
@@ -35,6 +36,7 @@ fn dipen(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyValidateContext>()?;
     m.add_class::<PyValidateArcContext>()?;
     m.add_class::<PyValidatePlaceContext>()?;
+    m.add_class::<PyValidationResult>()?;
     m.add_class::<PyCreateContext>()?;
     m.add_class::<PyCreateArcContext>()?;
     m.add_class::<PyCreatePlaceContext>()?;

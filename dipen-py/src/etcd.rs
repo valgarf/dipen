@@ -3,7 +3,7 @@ use std::time::Duration;
 use dipen::etcd::ETCDConfig;
 use pyo3::prelude::*;
 
-#[pyclass(name = "ETCDGate")]
+#[pyclass(name = "ETCDConfig")]
 pub struct PyETCDGateConfig {
     pub config: ETCDConfig,
 }

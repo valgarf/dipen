@@ -1,5 +1,5 @@
 use dipen::{
-    exec::{ValidateArcContext, ValidateContext, ValidatePlaceContext},
+    exec::{ValidateArcContext, ValidateContext, ValidatePlaceContext, ValidationResult},
     net,
 };
 use pyo3::prelude::*;
@@ -25,6 +25,12 @@ pub struct PyValidateArcContext {
 #[derive(Clone)]
 pub struct PyValidatePlaceContext {
     place_name: String,
+}
+
+#[pyclass(name = "ValidationResult")]
+#[derive(Clone)]
+pub struct PyValidationResult {
+    pub inner: ValidationResult,
 }
 
 impl PyValidateContext {
@@ -68,9 +74,11 @@ impl PyValidateContext {
     fn arcs_in(&self) -> Vec<PyValidateArcContext> {
         self.arcs.iter().filter(|a| a.variant().is_in()).cloned().collect()
     }
+    #[getter]
     fn arcs_out(&self) -> Vec<PyValidateArcContext> {
         self.arcs.iter().filter(|a| a.variant().is_out()).cloned().collect()
     }
+    #[getter]
     fn arcs_cond(&self) -> Vec<PyValidateArcContext> {
         self.arcs.iter().filter(|a| a.variant().is_cond()).cloned().collect()
     }
@@ -105,5 +113,18 @@ impl PyValidatePlaceContext {
     #[getter]
     fn place_name(&self) -> &str {
         &self.place_name
+    }
+}
+
+#[pymethods]
+impl PyValidationResult {
+    #[staticmethod]
+    pub fn succeeded() -> PyValidationResult {
+        PyValidationResult { inner: ValidationResult::succeeded() }
+    }
+
+    #[staticmethod]
+    pub fn failed(reason: &str) -> PyValidationResult {
+        PyValidationResult { inner: ValidationResult::failed(reason) }
     }
 }

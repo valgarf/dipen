@@ -11,6 +11,7 @@ pub trait ValidateArcContext {
     fn place_context(&self) -> impl ValidatePlaceContext;
 }
 
+#[derive(Clone)]
 pub struct ValidationResult {
     success: bool,
     reason: String,

@@ -14,14 +14,27 @@ LOGURU_FORMAT = (
 
 class TrInitialize:
     @staticmethod
-    def validate(ctx):
-        return True
+    def validate(ctx: dipen.ValidateContext):
+        logger.info("Validating Transition {}", ctx.transition_name)
+        if (
+            len(ctx.arcs_out) == 1
+            and len(ctx.arcs_in) == 0
+            and len(ctx.arcs_cond) == len(ctx.arcs)
+        ):
+            raise RuntimeError("wtf")
+            dipen.ValidationResult.succeeded()
+        else:
+            dipen.ValidationResult.failed(
+                "Need exactly one conditional outgoing arc, no incoming arcs and may have an arbitrary number of conditional arcs!",
+            )
 
-    def __init__(self, ctx):
+        return dipen.ValidationResult.succeeded()
+
+    def __init__(self, ctx: dipen.CreateContext):
         self.pl_out = ctx.arcs_out[0].place_context.place_id
         self.pl_ids = [a.place_context.place_id for a in ctx.arcs_cond]
 
-    def check_start(self, ctx):
+    def check_start(self, ctx: dipen.StartContext):
         count = sum(
             len(ctx.tokens_at(pl_id)) + len(ctx.taken_tokens_at(pl_id))
             for pl_id in self.pl_ids
@@ -30,7 +43,7 @@ class TrInitialize:
             return dipen.CheckStartResult.build().disabled()
         return dipen.CheckStartResult.build().enabled()
 
-    async def run(self, ctx):
+    async def run(self, ctx: dipen.RunContext):
         await asyncio.sleep(1)
         result = dipen.RunResult.build()
         result.place_new(self.pl_out, "newly created".encode())
@@ -39,15 +52,22 @@ class TrInitialize:
 
 class TrDelayedMove:
     @staticmethod
-    def validate(ctx):
-        return True
+    def validate(ctx: dipen.ValidateContext):
+        logger.info("Validating TrInitialize")
+        logger.info("Validating transition {}", ctx.transition_name)
+        if len(ctx.arcs_in) == 1 and len(ctx.arcs_out) == 1:
+            return dipen.ValidationResult.succeeded()
+        else:
+            return dipen.ValidationResult.failed(
+                "Need exactly one incoming and one outgoing arc"
+            )
 
-    def __init__(self, ctx):
+    def __init__(self, ctx: dipen.CreateContext):
         self.pl_in = ctx.arcs_in[0].place_context.place_id
         self.pl_out = ctx.arcs_out[0].place_context.place_id
         self.tr_name = ctx.transition_name
 
-    def check_start(self, ctx):
+    def check_start(self, ctx: dipen.StartContext):
         tokens_in = ctx.tokens_at(self.pl_in)
         if not tokens_in:
             return dipen.CheckStartResult.build().disabled()
@@ -55,8 +75,14 @@ class TrDelayedMove:
         result.take(tokens_in[0])
         return result.enabled()
 
-    async def run(self, ctx):
-        await asyncio.sleep(1)
+    async def run(self, ctx: dipen.RunContext):
+        try:
+            while True:
+                await asyncio.sleep(1)
+                print("Still running")
+        except BaseException as exc:
+            print("Stopped running with: {}:{}", type(exc), exc)
+
         result = dipen.RunResult.build()
         for to in ctx.tokens:
             result.place(to, self.pl_out)
@@ -66,11 +92,23 @@ class TrDelayedMove:
         return result.result()
 
 
-async def async_main(net, etcd, executors):
-    handle = dipen.start(net, etcd, executors)
+async def cancel_after_delay(handle):
     await asyncio.sleep(5)
+    print("Cancelling")
     handle.cancel()
-    return handle
+
+
+async def async_main(
+    net: dipen.PetriNetBuilder,
+    etcd: dipen.ETCDConfig,
+    executors: dipen.ExecutorRegistry,
+):
+    handle = dipen.start(net, etcd, executors)
+    asyncio.create_task(cancel_after_delay(handle))
+    await handle.join_async()
+    print("Joined")
+    await asyncio.sleep(3)
+    print("bye from python!")
 
 
 def main():
@@ -92,7 +130,7 @@ def main():
     net.insert_arc("pl2", "tr2", dipen.ArcVariant.In)
     net.insert_arc("pl1", "tr2", dipen.ArcVariant.Out)
     net.insert_transition("tr-init", "region-1")
-    net.insert_arc("pl1", "tr-init", dipen.ArcVariant.OutCond)
+    net.insert_arc("pl1", "tr-init", dipen.ArcVariant.Out)
     net.insert_arc("pl2", "tr-init", dipen.ArcVariant.Cond)
 
     executors = dipen.ExecutorRegistry()
@@ -100,14 +138,13 @@ def main():
     executors.register("tr2", TrDelayedMove, None)
     executors.register("tr-init", TrInitialize, None)
 
-    etcd = dipen.ETCDGate(
+    etcd = dipen.ETCDConfig(
         endpoints=["localhost:2379"],
         prefix="py-01-endless-loop/",
         node_name="node1",
         region="region-1",
     )
-    handle = asyncio.run(async_main(net, etcd, executors))
-    handle.join()
+    asyncio.run(async_main(net, etcd, executors))
 
 
 if __name__ == "__main__":

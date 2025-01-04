@@ -1,13 +1,30 @@
-- python bindings
 - Readme
-- fix random 'check one transition multiple times' bug
-- improve logging on python (include fields from scopes, log scope start / end)
-- extract etcd logic into traits
-- tests (with multiprocessing?)
-- visualization
-- mark running transitions?
-- human readable reasoning for not firing?
-- store 'last_changed', 'last_start_firing', 'last_finished_firing', etc. time from local time?
-    -> startup time for initial load?
-- remove transitions from own region on etcd, if not in configuration?
+- improve python bindings
+    * error handling could be improved (what should a transition do if the python run function fails?)
+    * API not very pythonic
+    * registry data not passed through to validate / create
+    * pass cancellation through to running python transitions
+    * improve logging include fields from scopes, log scope start / end
+- tests for this package
+- simplify testing for users
+    * implement a 'local' runner for testing (extract etcd logic into traits)
+    * snapshottest, i.e. replay run based on a stored run, allow storing the run (special runner?)
+    * export (parts of) the etcd history to be used for tests
+- Visualization (with history from etcd?)
+    * mark running transitions? currently not stored on etcd
+    * human readable reasoning for not firing?
+- time data:
+    * store 'last_changed', 'last_start_firing', 'last_finished_firing', etc. time from local time?
+      -> startup time for initial load?
+    * store local time of runners on etcd with every update? Could be used in visualization to show
+      an estimated time of the last change
+- migration strategies / manual interaction:
+    * remove transitions from own region on etcd, if not in current configuration?
+      -> 'transfer' of transition region: first update runner that does not use the transition anymore, then update runner for the new region
+    * allow manual blocking of regions / transitions (will not start firing)
+    * allow manual cancellation of regions / transitins (cancel currently running)
+    * prepared 'manual transitions' that only fire on manual input (with additional provided data)?
+    * 'ad hoc' manual transtions that take / place from / to arbitrary places with arbitrary updates to modify state?
 - statistics (transitions / s, how often was each transition fired)? 
+
+ 

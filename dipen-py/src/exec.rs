@@ -5,7 +5,7 @@ use crate::{
         create::PyCreateContext,
         run::{PyRunContext, PyRunResult},
         start::{PyCheckStartResult, PyStartContext},
-        validate::PyValidateContext,
+        validate::{PyValidateContext, PyValidationResult},
     },
     registry::PyRegistryMap,
 };
@@ -29,25 +29,24 @@ impl TransitionExecutor for PyTransitionDispatcher {
         let data: Arc<PyRegistryMap> = data.downcast().expect("Registry data has wrong type");
         match data.get(ctx.transition_name()) {
             None => {
-                return ValidationResult::failed(format!(
-                    "Transition '{}' missing",
-                    ctx.transition_name()
-                ));
+                ValidationResult::failed(format!("Transition '{}' missing", ctx.transition_name()))
             }
             Some((py_cls, _py_data)) => {
                 // store py data in PyValidateContext?
                 let py_ctx = PyValidateContext::new(ctx);
                 Python::with_gil(|py| {
-                    let _ = py_cls
+                    let validate_res = py_cls
                         .bind(py)
                         .call_method1("validate", (py_ctx,))
-                        .expect("validate failed. TODO: error handling for python exceptions.");
-                    // TODO: how to correctly handle validation?
-                    // ValidationResult::failed()
-                });
+                        .and_then(|py_obj| py_obj.extract::<PyValidationResult>());
+
+                    match validate_res {
+                        Err(py_err) => ValidationResult::failed(py_err.to_string()),
+                        Ok(res) => res.inner,
+                    }
+                })
             }
         }
-        ValidationResult::succeeded()
     }
 
     fn new(ctx: &impl dipen::exec::CreateContext) -> Self

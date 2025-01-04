@@ -14,7 +14,7 @@ pub struct PyRunTokenContext {
     data: Vec<u8>,
     orig_place_id: net::PlaceId,
 }
-#[pyclass(name = "PyRunContext")]
+#[pyclass(name = "RunContext")]
 #[derive(Clone)]
 pub struct PyRunContext {
     tokens: Vec<PyRunTokenContext>,
@@ -108,13 +108,13 @@ impl PyRunResultBuilder {
 }
 #[pymethods]
 impl PyRunResultBuilder {
-    pub fn place(&mut self, to: &PyRunTokenContext, place_id: u64) -> PyResult<()> {
-        self.get_inner_mut()?.place(to, PlaceId(place_id));
+    pub fn place(&mut self, token: &PyRunTokenContext, place_id: u64) -> PyResult<()> {
+        self.get_inner_mut()?.place(token, PlaceId(place_id));
         Ok(())
     }
 
-    pub fn update(&mut self, to: &PyRunTokenContext, data: Vec<u8>) -> PyResult<()> {
-        self.get_inner_mut()?.update(to, data);
+    pub fn update(&mut self, token: &PyRunTokenContext, data: Vec<u8>) -> PyResult<()> {
+        self.get_inner_mut()?.update(token, data);
         Ok(())
     }
 

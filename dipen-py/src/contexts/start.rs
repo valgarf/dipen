@@ -8,7 +8,7 @@ use dipen::{
     },
     net::{self},
 };
-use pyo3::{prelude::*, types::PyType};
+use pyo3::prelude::*;
 
 use crate::{PyPetriError, PyPetriResult};
 
