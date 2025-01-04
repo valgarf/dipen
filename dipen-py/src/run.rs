@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::thread::{self, JoinHandle};
+use std::thread;
 
 use crate::error::*;
 use crate::etcd::PyETCDGateConfig;

@@ -16,15 +16,15 @@ class TrInitialize:
     @staticmethod
     def validate(ctx: dipen.ValidateContext):
         logger.info("Validating Transition {}", ctx.transition_name)
+        print(len(ctx.arcs_out), len(ctx.arcs_cond), len(ctx.arcs))
         if (
             len(ctx.arcs_out) == 1
             and len(ctx.arcs_in) == 0
             and len(ctx.arcs_cond) == len(ctx.arcs)
         ):
-            raise RuntimeError("wtf")
             dipen.ValidationResult.succeeded()
         else:
-            dipen.ValidationResult.failed(
+            return dipen.ValidationResult.failed(
                 "Need exactly one conditional outgoing arc, no incoming arcs and may have an arbitrary number of conditional arcs!",
             )
 
@@ -76,13 +76,7 @@ class TrDelayedMove:
         return result.enabled()
 
     async def run(self, ctx: dipen.RunContext):
-        try:
-            while True:
-                await asyncio.sleep(1)
-                print("Still running")
-        except BaseException as exc:
-            print("Stopped running with: {}:{}", type(exc), exc)
-
+        await asyncio.sleep(1)
         result = dipen.RunResult.build()
         for to in ctx.tokens:
             result.place(to, self.pl_out)
@@ -106,9 +100,7 @@ async def async_main(
     handle = dipen.start(net, etcd, executors)
     asyncio.create_task(cancel_after_delay(handle))
     await handle.join_async()
-    print("Joined")
-    await asyncio.sleep(3)
-    print("bye from python!")
+    print("Bye from python!")
 
 
 def main():
@@ -130,7 +122,7 @@ def main():
     net.insert_arc("pl2", "tr2", dipen.ArcVariant.In)
     net.insert_arc("pl1", "tr2", dipen.ArcVariant.Out)
     net.insert_transition("tr-init", "region-1")
-    net.insert_arc("pl1", "tr-init", dipen.ArcVariant.Out)
+    net.insert_arc("pl1", "tr-init", dipen.ArcVariant.OutCond)
     net.insert_arc("pl2", "tr-init", dipen.ArcVariant.Cond)
 
     executors = dipen.ExecutorRegistry()
