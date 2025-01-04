@@ -17,6 +17,7 @@ mod common;
 
 #[tracing::instrument(level = "info")]
 async fn run() -> PetriResult<()> {
+    // listen to shutdown events
     let shutdown_token = CancellationToken::new();
     let shutdown_token_clone = shutdown_token.clone();
     tokio::spawn(async move {
@@ -31,10 +32,9 @@ async fn run() -> PetriResult<()> {
         shutdown_token_clone.cancel();
     });
 
+    // set up petri net and executors
     let mut net = PetriNetBuilder::default();
-
     let mut executors = ExecutorRegistry::new();
-
     net.insert_place(Place::new("pl1", true));
     net.insert_place(Place::new("pl2", true));
     net.insert_transition(Transition::new("tr1", "region-1"));
@@ -49,8 +49,9 @@ async fn run() -> PetriResult<()> {
     executors.register::<common::transitions::DelayedMove>("tr1", None);
     executors.register::<common::transitions::DelayedMove>("tr2", None);
     executors.register::<common::transitions::Initialize>("tr-init", None);
-
     let net = Arc::new(net);
+
+    // configure etcd connection (this works for the default configuration of a single local node)
     let config = ETCDConfigBuilder::default()
         .endpoints(["localhost:2379"])
         .prefix("01-endless-loop/")
@@ -73,6 +74,7 @@ async fn run() -> PetriResult<()> {
 
 #[tokio::main]
 async fn main() -> PetriResult<()> {
+    // set up logging
     tracing_subscriber::fmt()
         .with_span_events(
             tracing_subscriber::fmt::format::FmtSpan::CLOSE

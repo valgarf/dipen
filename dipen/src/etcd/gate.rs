@@ -128,18 +128,18 @@ macro_rules! cancelable_send {
 ///
 /// Data Layout on etcd:
 ///
-/// <prefix>/id_generator/pl -> version of this field is used to create unique ids for places
-/// <prefix>/id_generator/tr -> ... for transitions
-/// <prefix>/id_generator/to -> ... for tokens
-/// <prefix>/region/<region-name>/election -> used as election for the given region. Child key values indicate running nodes.
-/// <prefix>/place_ids/<place-name> -> value is id of that place
-/// <prefix>/transition_ids/<transition-name> -> value is id of that transition
-/// <prefix>/transition_ids/<transition-name>/region -> value is region of that transition
-/// <prefix>/pl/<place-id>/<token-id> -> value is the token data, place id provides the position
-/// <prefix>/pl/<place-id>/<token-id>/<transition-id> -> value currently unused, token has been taken by the given transition (leased, will be undone if cancelled)
-/// <prefix>/pl/<place-id>/lock/<lease-is> -> Lock request for place by node identified by its lease. NOTE: locks are kept indefinitely. If a second lock request appears, the lock owner should free its lock as soon as possible.
-/// <prefix>/tr/<region-name>/<transition-id>/request/<request-key> -> value is the input data, request to execute this manual transition. TODO: not yet implemented
-/// <prefix>/tr/<region-name>/<transition-id>/request/<request-key>/response -> request has been fulfilled (transition has been executed). It may provide reponse data as value. Request owner should cler the field. TODO: not yet implemented
+/// {prefix}/id_generator/pl -> version of this field is used to create unique ids for places
+/// {prefix}/id_generator/tr -> ... for transitions
+/// {prefix}/id_generator/to -> ... for tokens
+/// {prefix}/region/{region-name}/election -> used as election for the given region. Child key values indicate running nodes.
+/// {prefix}/place_ids/{place-name} -> value is id of that place
+/// {prefix}/transition_ids/{transition-name} -> value is id of that transition
+/// {prefix}/transition_ids/{transition-name}/region -> value is region of that transition
+/// {prefix}/pl/{place-id}/{token-id} -> value is the token data, place id provides the position
+/// {prefix}/pl/{place-id}/{token-id}/{transition-id} -> value currently unused, token has been taken by the given transition (leased, will be undone if cancelled)
+/// {prefix}/pl/{place-id}/lock/{lease-id} -> Lock request for place by node identified by its lease. NOTE: locks are kept indefinitely. If a second lock request appears, the lock owner should free its lock as soon as possible.
+/// {prefix}/tr/{region-name}/{transition-id}/request/{request-key} -> value is the input data, request to execute this manual transition. TODO: not yet implemented
+/// {prefix}/tr/{region-name}/{transition-id}/request/{request-key}/response -> request has been fulfilled (transition has been executed). It may provide reponse data as value. Request owner should cler the field. TODO: not yet implemented
 ///
 impl ETCDGate {
     pub fn new(config: ETCDConfig) -> Self {
@@ -490,8 +490,8 @@ impl ETCDGate {
         place_ids: &HashSet<PlaceId>,
         lease: LeaseId,
     ) -> Result<(Vec<NetChangeEvent>, HashSet<PlaceId>)> {
-        // <prefix>/pl/<place-id>/<token-id> -> value is the token data, place id provides the position
-        // <prefix>/pl/<place-id>/<token-id>/<transition-id> -> value is the token data, token has been taken by the given transition (leased, will be undone if cancelled)
+        // {prefix}/pl/{place-id}/{token-id} -> value is the token data, place id provides the position
+        // {prefix}/pl/{place-id}/{token-id}/{transition-id} -> value is the token data, token has been taken by the given transition (leased, will be undone if cancelled)
 
         let mut change_events = Vec::new();
         let mut destroyed = HashMap::<TokenId, (PlaceId, Vec<u8>)>::new();
