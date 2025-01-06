@@ -230,6 +230,67 @@
 //!     }
 //! }
 //! ```
+//!
+//! ## Implementation
+//!
+//! The current implementation does roughly the following:
+//! - build a reduced petri net, only containing the region we want to run
+//! - call [`exec::TransitionExecutor::validate`] on all transitions, stopping with an error in case
+//!   of a failure
+//! - connect to etcd
+//! - try to become elected leader for the given region - this ensures only one runner is active for
+//!   a region. It also allows to start multiple runners and a second one will immediatly start as
+//!   soon as the first one revokes or looses its etcd lease.
+//! - spawn a transition runner for each transition in the net, which does:
+//!     * cancel a running transition. We are not yet running. If a transition is running according
+//!       to etcd, it is cancelled and all the tokens are placed back on their input place.
+//!       In a node crash this results in a transition firing a second time, probably with exactly
+//!       the same data. It is a good idea to have this in mind when writing a
+//!       [`exec::TransitionExecutor::run`] method. Ideally the method would be idempotent.
+//!     * create a transition instance using [`exec::TransitionExecutor::new`]
+//!     * on every change of one of the condition or input arcs for this transition, run
+//!       [`exec::TransitionExecutor::check_start`]. Note: As an optimization,
+//!       [`check_start`](exec::TransitionExecutor::check_start) can return a specific place to watch.
+//!       In this case only changes on that place trigger a recheck.
+//!     * if we can start, acquire a distributed lock to the places connected with conditional or
+//!       input arcs and run [`check_start`](exec::TransitionExecutor::check_start) again, possibly
+//!       with a different state.
+//!     * If we can still run, take the tokens indicated by the result of the
+//!       [`check_start`](exec::TransitionExecutor::check_start) function, using the fencing tokens
+//!       from the acquired locks to ensure we are allowed to do so.
+//!     * release the locks (at least locally, see note below)
+//!     * Call [`exec::TransitionExecutor::run`]
+//!     * Use the return value to move / create tokens on etcd, again by acquiring locks on the
+//!       output places and using the fencing tokens to ensure we are allowed to place tokens.
+//!     * Loop: check for changes on the connected conditional or input places again.
+//!
+//! Note that acquiring distributed locks takes a while. To optimize this, the acquired locks are
+//! not given back, until some other runner requests them. For all places that are only used within
+//! one runner, the locks are only taken once. There still is local locking between the different
+//! transition tasks, but this is much faster than communicating with etcd.
+//!
+//! Another optimization concerns places at boundaries between regions.
+//! Assume that the following part of a net,
+//! <p>
+#![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/diagrams/locking-opt.svg"))]
+//! </p>
+//! runs on two different runners. The transitions on the left are in one region, the transitions
+//! on the right in another one.
+//!
+//! Normally, everytime a token is passed from the left to the right region, the transition in the
+//! left region needs to acquire a lock before placing the token and afterwards the region on the
+//! right needs a lock to take the token.
+//!
+//! However, the output locking is unnecessary, if this place were to be used like a queue, that is,
+//! the transitions on the right only ever take the oldest token from the place.
+//! In this case, the transitions on the right do exactly the same, even if another token were to be
+//! added to the place. Even if this token is added while the right region holds the place's lock.
+//!
+//! To facilitate that, output locking can be disabled for individual places. Only do this if it
+//! does not introduce any logic problems. Always check: For every transition taking tokens from
+//! this place, running [`check_start`](exec::TransitionExecutor::check_start) should give the same
+//! result, even if additional tokens were to be placed.
+//!
 
 pub mod error;
 pub mod etcd;
