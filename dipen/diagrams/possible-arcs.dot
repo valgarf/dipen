@@ -1,0 +1,20 @@
+digraph G {
+    rankdir = LR;
+    center = true;
+    margin = 1;
+    bgcolor = "transparent";
+    subgraph place {
+        node [shape = circle; fixedsize = true; label = ""; height = .3; width = .3; fontsize = 20;];
+        p1, p2, p3, p4, p5;
+    }
+    subgraph transitions {
+        node [shape = rect; height = 0.4; width = .4; forcelabels = true; label = "";];
+        t1;
+    }
+    
+    p1 -> t1 [label="In"];
+    t1 -> p2 [label="Out"];
+    t1 -> p3 [dir="both"; label="InOut"];
+    p4 -> t1 [arrowhead="dot"; label="Cond"];
+    p5 -> t1 [dir="both"; arrowhead="dot"; xlabel="OutCond"];
+}

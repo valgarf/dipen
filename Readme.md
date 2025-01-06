@@ -1,7 +1,7 @@
 # DiPeN - distributed petri net runner
 
-This library implements a distributed petri net runner with the goal to be usable as a workflow 
-engine, that is, driving real workflows, not just simulating them.
+This library implements a distributed runner to use petri nets as a workflow engine, that is,
+driving real workflows, not just simulating them.
 
 The petri net differs from the classical petri net in multiple areas:
 - Tokens are colored: Tokens can have arbitrary data attached to them. 
@@ -23,11 +23,13 @@ for other installation options, see [etcd docs](https://etcd.io/docs/v3.5/instal
 
 ### Rust
 
-You can install DiPeN from [crates.io](https://crates.io/). See dipen/examples in the repository to get started.
+You can install DiPeN from [crates.io](https://crates.io/), there is [documentation](https://docs.rs/dipen/latest/dipen/) to get you started und you might want to have a look at the rust [examples](dipen/examples).
 
 ### Python
 
-You can install DiPeN from [pypi](https://pypi.org/). See dipen-py/examples in the repositry to get started.
+You can install DiPeN from [pypi](https://pypi.org/). See dipen-py/examples in the repositry to get started. Currently there is no python specific documentation hosted, but the python classes and 
+functions are documented with docstrings. The python API also closely resembles the rust one, so you
+might want to look at the rust documentation.
 
 ## ToDo
 
