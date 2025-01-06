@@ -1,0 +1,21 @@
+digraph G {
+    rankdir = LR;
+    center = true;
+    margin = 1;
+    bgcolor = "transparent";
+    subgraph place {
+        node [shape = circle; fixedsize = true; label = ""; height = .3; width = .3; fontsize = 20;];
+        p1 [label = "P1";];
+        p2 [label = "P2";];
+    }
+    subgraph transitions {
+        node [shape = rect; height = 0.4; width = .4; forcelabels = true; label = "";];
+        t1 [label = "T1";];
+        t2 [label = "T2";];
+        t [label = "I";];
+    }
+    
+    p1 -> t1 -> p2 -> t2 -> p1;
+    t -> p1 [dir = "both";];
+    p2 -> t [arrowhead = "dot";];
+}

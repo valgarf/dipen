@@ -219,7 +219,7 @@ fn single_node() {
             ),
     );
     let filename = criterion_path.join("single_node_times");
-    let image_format = plotly::ImageFormat::PNG;
+    let image_format = plotly::ImageFormat::SVG;
     let width = 800;
     let height = 600;
     let scale = 1.0;
@@ -242,7 +242,7 @@ fn single_node() {
             ),
     );
     let filename = criterion_path.join("single_node_throughput_lin");
-    let image_format = plotly::ImageFormat::PNG;
+    let image_format = plotly::ImageFormat::SVG;
     let width = 800;
     let height = 600;
     let scale = 1.0;
@@ -257,7 +257,7 @@ fn single_node() {
         ),
     );
     let filename = criterion_path.join("single_node_throughput_log");
-    let image_format = plotly::ImageFormat::PNG;
+    let image_format = plotly::ImageFormat::SVG;
     let width = 800;
     let height = 600;
     let scale = 1.0;

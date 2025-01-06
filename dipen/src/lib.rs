@@ -10,9 +10,9 @@
 //! - Transition have arbitrary guard expressions: You can write any logic you want to decide
 //!   whether a transition can be fired.
 //!
-//! If the last paragraph sounded like gibberish to you, read the [Petri Net](petri-net) section for
+//! If the last paragraph sounded like gibberish to you, read the [Petri Net](#petri-net) section for
 //! an introduction on DiPeN's version of petri nets.
-//! Otherwise, you can skip this and continue with [Getting Started](getting-started).
+//! Otherwise, you can skip this and continue with [Getting Started](#getting-started).
 //!
 //! ## Petri Net
 //!
@@ -265,7 +265,7 @@
 //!     * Loop: check for changes on the connected conditional or input places again.
 //!
 //! Note that acquiring distributed locks takes a while. To optimize this, the acquired locks are
-//! not given back, until some other runner requests them. For all places that are only used within
+//! not given back until some other runner requests them. For all places that are only used within
 //! one runner, the locks are only taken once. There still is local locking between the different
 //! transition tasks, but this is much faster than communicating with etcd.
 //!
@@ -290,6 +290,42 @@
 //! does not introduce any logic problems. Always check: For every transition taking tokens from
 //! this place, running [`check_start`](exec::TransitionExecutor::check_start) should give the same
 //! result, even if additional tokens were to be placed.
+//!
+//! ## Benchmarks
+//!
+//! ### Single node
+//!
+//! Uses N identical copies of the following net:
+//! <p>
+#![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/diagrams/bench-single-node.svg"))]
+//! </P>
+//! Transition 'I' fires in the beginning and places a token on 'P1' with a number value.
+//! 'T1' and 'T2' always take this single token, reduce the number by 1 and place it
+//! on their output place. When the value is down to 0, 'I' takes the token away again.  
+//!
+//! The benchmark starts when all the 'I' transitions run for the first time (synchronised with a
+//! barrier). Benchmark ends when the 'I' transitions fire for the second time (synchronized
+//! with a barrier again).
+//!
+//! etcd is running locally with a single node. Real deployments would have multiple etcd notes that
+//! need to communicate, so changes would need more time, i.e. a chain of transitions that need to
+//! happen one after the other (as in the example net) are likely much slower.
+//! Furthermore, real transitions would likely have side effects, which need time to be executed.
+//!
+//! <p>
+#![doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/benches/single_node_throughput_log.svg"))]
+//! </p>
+//!
+//! ### Locking
+//! Note that the single-node benchmark above never measures acquiring a lock from etcd.
+//!
+//! When running a single net as shown above, but with 'T1' and 'T2' in different regions,
+//! throughput drops to ~5 transitions/s on my machine.
+//! One transition requires two lock changes (input and output place) so it currently costs roughly
+//! 100 ms to change the lock owner between different runners.
+//!
+//! CPU: Intel(R) Core(TM) i5-9600 CPU @ 3.10GHz (6 cores)  
+//! SSD: Corsair Force MP510
 //!
 
 pub mod error;
