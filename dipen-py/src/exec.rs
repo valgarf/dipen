@@ -5,11 +5,10 @@ use crate::{
         create::PyCreateContext,
         run::{PyRunContext, PyRunResult},
         start::{PyCheckStartResult, PyStartContext},
-        validate::{PyValidateContext, PyValidationResult},
     },
     registry::PyRegistryMap,
 };
-use dipen::exec::{CheckStartResult, RunResult, TransitionExecutor, ValidationResult};
+use dipen::exec::{CheckStartResult, CreationError, RunResult, TransitionExecutor};
 use pyo3::prelude::*;
 use pyo3_async_runtimes::{into_future_with_locals, TaskLocals};
 pub struct PyTransitionDispatcher {
@@ -21,44 +20,17 @@ pub struct PyTransitionDispatcher {
 pub static RUNNING_LOOP: OnceLock<PyObject> = OnceLock::new();
 
 impl TransitionExecutor for PyTransitionDispatcher {
-    fn validate(ctx: &impl dipen::exec::ValidateContext) -> ValidationResult
+    fn new(ctx: &impl dipen::exec::CreateContext) -> Result<Self, CreationError>
     where
         Self: Sized,
     {
-        let data = ctx.registry_data().expect("Missing registry data");
-        let data: Arc<PyRegistryMap> = data.downcast().expect("Registry data has wrong type");
+        let data =
+            ctx.registry_data().ok_or_else(|| CreationError::new("Missing registry data"))?;
+        let data: Arc<PyRegistryMap> = data.downcast().map_err(|err| {
+            CreationError::new(format!("Registry data has wrong type: {:?}", err))
+        })?;
         match data.get(ctx.transition_name()) {
-            None => {
-                ValidationResult::failed(format!("Transition '{}' missing", ctx.transition_name()))
-            }
-            Some((py_cls, _py_data)) => {
-                // store py data in PyValidateContext?
-                let py_ctx = PyValidateContext::new(ctx);
-                Python::with_gil(|py| {
-                    let validate_res = py_cls
-                        .bind(py)
-                        .call_method1("validate", (py_ctx,))
-                        .and_then(|py_obj| py_obj.extract::<PyValidationResult>());
-
-                    match validate_res {
-                        Err(py_err) => ValidationResult::failed(py_err.to_string()),
-                        Ok(res) => res.inner,
-                    }
-                })
-            }
-        }
-    }
-
-    fn new(ctx: &impl dipen::exec::CreateContext) -> Self
-    where
-        Self: Sized,
-    {
-        let data = ctx.registry_data().expect("Missing registry data");
-        let data: Arc<PyRegistryMap> = data.downcast().expect("Registry data has wrong type");
-        match data.get(ctx.transition_name()) {
-            None => {
-                panic!("create failed, transition {} missing from registry. TODO: error handling for python exceptions.", ctx.transition_name())
-            }
+            None => Err(CreationError::new("create failed, transitionmissing from registry.")),
             Some((py_cls, _py_data)) => {
                 // store py data in PyValidateContext?
                 let py_ctx = PyCreateContext::new(ctx);
@@ -66,15 +38,18 @@ impl TransitionExecutor for PyTransitionDispatcher {
                     let res = py_cls
                         .bind(py)
                         .call1((py_ctx,))
-                        .expect(
-                            "creating instance failed. TODO: error handling for python exceptions.",
-                        )
+                        .map_err(|py_err| {
+                            CreationError::new(format!(
+                                "Creation of python instance failed: {}",
+                                py_err // TODO: format traceback!
+                            ))
+                        })?
                         .unbind();
-                    Self {
+                    Ok(Self {
                         // transition_name: ctx.transition_name().into(),
                         // transition_id: ctx.transition_id(),
                         py_obj: res,
-                    }
+                    })
                 })
             }
         }

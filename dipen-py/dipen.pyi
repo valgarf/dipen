@@ -139,33 +139,6 @@ class ETCDConfig:
                          is assigned.
         """
 
-class ValidateContext:
-    """
-    Provided to the 'validate' function of your transition executor.
-    """
-
-    transition_name: str
-    arcs: list[CreateArcContext]
-    arcs_in: list[CreateArcContext]
-    arcs_out: list[CreateArcContext]
-    arcs_cond: list[CreateArcContext]
-    def arcs_by_name(self, arc_name: str) -> list[CreateArcContext]: ...
-    def arcs_by_place_name(self, place_name: str) -> list[CreateArcContext]: ...
-
-class ValidateArcContext:
-    arc_name: str
-    variant: ArcVariant
-    place_context: CreatePlaceContext
-
-class ValidatePlaceContext:
-    place_name: str
-
-class ValidationResult:
-    @staticmethod
-    def succeeded() -> ValidationResult: ...
-    @staticmethod
-    def failed(reason: str) -> ValidationResult: ...
-
 class CreateContext:
     """
     Provided to the '__init__' function of your transition executor.

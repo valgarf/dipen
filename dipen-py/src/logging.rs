@@ -42,7 +42,12 @@ impl tracing::field::Visit for PyDictVisitor<'_> {
     }
 
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-        set_field!(self.fields, field.name(), value);
+        let final_str_value = if field.name() == "message" {
+            value.replace("{", "{{").replace("}", "}}")
+        } else {
+            value.into()
+        };
+        set_field!(self.fields, field.name(), &final_str_value);
     }
 
     fn record_error(
@@ -50,11 +55,23 @@ impl tracing::field::Visit for PyDictVisitor<'_> {
         field: &tracing::field::Field,
         value: &(dyn std::error::Error + 'static),
     ) {
-        set_field!(self.fields, field.name(), value.to_string());
+        let str_value = value.to_string();
+        let final_str_value = if field.name() == "message" {
+            str_value.replace("{", "{{").replace("}", "}}")
+        } else {
+            str_value
+        };
+        set_field!(self.fields, field.name(), &final_str_value);
     }
 
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        set_field!(self.fields, field.name(), format!("{:?}", value));
+        let str_value = format!("{:?}", value);
+        let final_str_value = if field.name() == "message" {
+            str_value.replace("{", "{{").replace("}", "}}")
+        } else {
+            str_value
+        };
+        set_field!(self.fields, field.name(), &final_str_value);
     }
 }
 
@@ -81,7 +98,7 @@ where
             event.record(&mut visitor);
             let PyDictVisitor { fields } = visitor;
             let msg = fields
-                .as_any() //PyAny::get_item(fields, "message")
+                .as_any()
                 .get_item("message")
                 .unwrap_or(intern!(py, "<log message missing>").as_any().clone());
             let record = PyDict::new(py);
@@ -99,9 +116,23 @@ where
             let kwargs = PyDict::new(py);
             set_field!(kwargs, intern!(py, "_rust_record"), &record);
             if let Err(err) =
-                self.logger.call_method(py, intern!(py, "log"), (&level, msg), Some(&kwargs))
+                self.logger.call_method(py, intern!(py, "log"), (&level, &msg), Some(&kwargs))
             {
-                println!("Unable to log message with loguru. Error: {}", err)
+                let globals = PyDict::new(py);
+                let mod_traceback =
+                    py.import("traceback").expect("Failed to import python's 'traceback' module.");
+                set_field!(globals, intern!(py, "exc"), &err);
+                set_field!(globals, intern!(py, "traceback"), &mod_traceback);
+                println!(
+                    "Unable to log message with loguru. Message: {},  Error: {}",
+                    msg,
+                    py.eval(
+                        c_str!("''.join(traceback.format_exception(exc))"),
+                        Some(&globals),
+                        None,
+                    )
+                    .expect("Failed to format python exception")
+                )
             }
             // let _ = py.run(
             //     c_str!("logger.log(record['level'],record['fields']['message'])"),

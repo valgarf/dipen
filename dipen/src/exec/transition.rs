@@ -1,11 +1,11 @@
 use super::{
-    CheckStartResult, CreateContext, RunContext, RunResult, StartContext, ValidateContext,
-    ValidationResult,
+    create::CreationError, CheckStartResult, CreateContext, RunContext, RunResult, StartContext,
 };
 
 pub trait TransitionExecutor {
-    fn validate(ctx: &impl ValidateContext) -> ValidationResult;
-    fn new(ctx: &impl CreateContext) -> Self;
+    fn new(ctx: &impl CreateContext) -> Result<Self, CreationError>
+    where
+        Self: Sized;
     fn check_start(&mut self, ctx: &mut impl StartContext) -> CheckStartResult;
     fn run(
         &mut self,

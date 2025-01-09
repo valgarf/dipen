@@ -2,8 +2,8 @@ use std::{any::Any, str::from_utf8, sync::Arc};
 
 use dipen::{
     exec::{
-        CheckStartResult, CreateArcContext, CreatePlaceContext, RunResult, StartTokenContext,
-        TransitionExecutor, ValidationResult,
+        CheckStartResult, CreateArcContext, CreatePlaceContext, CreationError, RunResult,
+        StartTokenContext, TransitionExecutor,
     },
     net::{PlaceId, TransitionId},
 };
@@ -34,30 +34,21 @@ pub fn decode(data: &[u8]) -> u16 {
 }
 
 impl TransitionExecutor for Initialize {
-    fn validate(ctx: &impl dipen::exec::ValidateContext) -> ValidationResult
-    where
-        Self: Sized,
-    {
-        info!("Validating transition {}", ctx.transition_name());
-        if ctx.arcs_out().count() == 1 && ctx.arcs_in().count() == ctx.arcs().count() {
-            ValidationResult::succeeded()
-        } else {
-            ValidationResult::failed(
-                "Need exactly one InOut arc and may have an arbitrary number of incoming arcs!",
-            )
-        }
-    }
-
-    fn new(ctx: &impl dipen::exec::CreateContext) -> Self
+    fn new(ctx: &impl dipen::exec::CreateContext) -> Result<Self, CreationError>
     where
         Self: Sized,
     {
         info!("Creating transition {} (id: {})", ctx.transition_name(), ctx.transition_id().0);
+        if ctx.arcs_out().count() != 1 || ctx.arcs_in().count() != ctx.arcs().count() {
+            return Err(CreationError::new(
+                "Need exactly one InOut arc and may have an arbitrary number of incoming arcs!",
+            ));
+        }
         let pl_out = ctx.arcs_out().next().unwrap().place_context().place_id();
         let pl_ids = ctx.arcs_in().map(|actx| actx.place_context().place_id()).collect();
 
         let init_data = ctx.registry_data().expect("Missing data for transition");
-        Initialize { pl_out, pl_ids, tr_id: ctx.transition_id(), finished: false, init_data }
+        Ok(Initialize { pl_out, pl_ids, tr_id: ctx.transition_id(), finished: false, init_data })
     }
 
     fn check_start(&mut self, ctx: &mut impl dipen::exec::StartContext) -> CheckStartResult {

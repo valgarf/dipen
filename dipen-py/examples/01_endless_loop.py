@@ -13,24 +13,18 @@ LOGURU_FORMAT = (
 
 
 class TrInitialize:
-    @staticmethod
-    def validate(ctx: dipen.ValidateContext):
-        logger.info("Validating Transition {}", ctx.transition_name)
-        print(len(ctx.arcs_out), len(ctx.arcs_cond), len(ctx.arcs))
+    def __init__(self, ctx: dipen.CreateContext):
+        logger.info("Creating Transition {}", ctx.transition_name)
         if (
             len(ctx.arcs_out) == 1
             and len(ctx.arcs_in) == 0
             and len(ctx.arcs_cond) == len(ctx.arcs)
         ):
-            dipen.ValidationResult.succeeded()
+            logger.info("Transition {} valid", ctx.transition_name)
         else:
-            return dipen.ValidationResult.failed(
+            raise RuntimeError(
                 "Need exactly one conditional outgoing arc, no incoming arcs and may have an arbitrary number of conditional arcs!",
             )
-
-        return dipen.ValidationResult.succeeded()
-
-    def __init__(self, ctx: dipen.CreateContext):
         self.pl_out = ctx.arcs_out[0].place_context.place_id
         self.pl_ids = [a.place_context.place_id for a in ctx.arcs_cond]
 
@@ -51,18 +45,12 @@ class TrInitialize:
 
 
 class TrDelayedMove:
-    @staticmethod
-    def validate(ctx: dipen.ValidateContext):
-        logger.info("Validating TrInitialize")
-        logger.info("Validating transition {}", ctx.transition_name)
-        if len(ctx.arcs_in) == 1 and len(ctx.arcs_out) == 1:
-            return dipen.ValidationResult.succeeded()
-        else:
-            return dipen.ValidationResult.failed(
-                "Need exactly one incoming and one outgoing arc"
-            )
-
     def __init__(self, ctx: dipen.CreateContext):
+        logger.info("Creating TrInitialize (transition {})", ctx.transition_name)
+        if len(ctx.arcs_in) == 1 and len(ctx.arcs_out) == 1:
+            logger.info("Transition valid")
+        else:
+            raise RuntimeError("Need exactly one incoming and one outgoing arc")
         self.pl_in = ctx.arcs_in[0].place_context.place_id
         self.pl_out = ctx.arcs_out[0].place_context.place_id
         self.tr_name = ctx.transition_name
