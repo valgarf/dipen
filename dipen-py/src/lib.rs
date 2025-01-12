@@ -15,9 +15,6 @@ use contexts::{
         PyCheckStartResult, PyCheckStartResultBuilder, PyStartContext, PyStartTakenTokenContext,
         PyStartTokenContext,
     },
-    validate::{
-        PyValidateArcContext, PyValidateContext, PyValidatePlaceContext, PyValidationResult,
-    },
 };
 use error::*;
 use etcd::PyETCDGateConfig;
@@ -34,10 +31,6 @@ fn _dipen_py_internal(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPetriNetBuilder>()?;
     m.add_class::<PyArcVariant>()?;
     m.add_class::<PyETCDGateConfig>()?;
-    m.add_class::<PyValidateContext>()?;
-    m.add_class::<PyValidateArcContext>()?;
-    m.add_class::<PyValidatePlaceContext>()?;
-    m.add_class::<PyValidationResult>()?;
     m.add_class::<PyCreateContext>()?;
     m.add_class::<PyCreateArcContext>()?;
     m.add_class::<PyCreatePlaceContext>()?;

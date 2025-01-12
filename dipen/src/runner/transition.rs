@@ -17,19 +17,20 @@ use crate::exec::{CheckStartChoice, RunResult, RunResultData};
 use crate::net::{self, PlaceId, Revision, TokenId};
 
 pub(crate) struct TransitionRunner {
-    pub cancel_token: CancellationToken,
-    pub transition_id: net::TransitionId,
-    pub etcd_gate: ETCDTransitionGate,
-    pub net_lock: Arc<RwLock<net::PetriNet>>,
-    pub place_rx: HashMap<net::PlaceId, tokio::sync::watch::Receiver<Revision>>,
-    pub exec: Box<dyn TransitionExecutorDispatch>,
-    pub rx_revision: tokio::sync::watch::Receiver<Revision>,
-    pub place_locks: HashMap<net::PlaceId, Arc<PlaceLock>>,
+    pub cancel_token: CancellationToken, // for shutting the transition runner down
+    pub transition_id: net::TransitionId, // this runner's transition id
+    pub etcd_gate: ETCDTransitionGate,   // for communicating with etcd
+    pub net_lock: Arc<RwLock<net::PetriNet>>, // get access to the local state of the net
+    pub exec: Box<dyn TransitionExecutorDispatch>, // dispatcher to access this transition's implementation
+    pub rx_place: HashMap<net::PlaceId, tokio::sync::watch::Receiver<Revision>>, // watch changes on each place
+    pub rx_revision: tokio::sync::watch::Receiver<Revision>, // watch current revision
+    pub rx_leader: tokio::sync::watch::Receiver<bool>, // true if leader election was successful
+    pub place_locks: HashMap<net::PlaceId, Arc<PlaceLock>>, // for acquiring globally unique locks to relevant places
+    pub run_data: RunData,                                  // internal state
     // used for logging and other messages
     pub region_name: String,
     pub node_name: String,
     pub transition_name: String,
-    pub run_data: RunData,
 }
 
 #[derive(Default)]
@@ -60,9 +61,14 @@ impl TransitionRunner {
     }
 
     async fn _run_transition(&mut self) -> Result<()> {
-        self._create_executor().await;
         // loading event should have been handled before checking for transitions to cancel
         TransitionRunner::_wait_for_revision(&mut self.rx_revision, Revision(1)).await?;
+        // we should be leader to start running (receiving error means the whole runner is shutting down)
+        self.rx_leader
+            .wait_for(|&is_leader| is_leader)
+            .await
+            .map_err(|_| PetriError::Cancelled())?;
+
         // We are just starting. If any token is still taken by our transitions, we need
         // to give it back to the input place. No one else should be running!
         self._cancel_running().await?;
@@ -125,7 +131,7 @@ impl TransitionRunner {
         Ok(())
     }
 
-    async fn _create_executor(&mut self) {
+    pub async fn create_executor(&mut self) -> Result<()> {
         let net = self.net_lock.read().await;
         let ctx = create::CreateContextStruct {
             net: &net,
@@ -134,7 +140,12 @@ impl TransitionRunner {
             arcs: net.arcs_for(self.transition_id).collect(),
             registry_data: None, // will be replaced by the dispatcher
         };
-        self.exec.create(ctx);
+        self.exec.create(ctx).map_err(|err| {
+            PetriError::ConfigError(format!(
+                "Creation of executor for transition {} failed with reason: {}.",
+                self.transition_name, err
+            ))
+        })
     }
 
     async fn _cancel_running(&mut self) -> Result<()> {
@@ -175,11 +186,11 @@ impl TransitionRunner {
             match self.run_data.wait_for {
                 None => {
                     let futures: Vec<_> =
-                        self.place_rx.values_mut().map(|rec| rec.changed().boxed()).collect();
+                        self.rx_place.values_mut().map(|rec| rec.changed().boxed()).collect();
                     let _ = select_all(futures).await;
                 }
                 Some(pl_id) => {
-                    let _ = self.place_rx.get_mut(&pl_id).unwrap().changed().await;
+                    let _ = self.rx_place.get_mut(&pl_id).unwrap().changed().await;
                 }
             }
         };
@@ -199,7 +210,7 @@ impl TransitionRunner {
         }
         // we will check if we can run with the current state. Throw away all additional change
         // notifications
-        for rec in self.place_rx.values_mut() {
+        for rec in self.rx_place.values_mut() {
             rec.mark_unchanged();
         }
         // we unset the wait for data. Any failure on '_check_start' will set a new value.
@@ -223,7 +234,7 @@ impl TransitionRunner {
     }
 
     fn _cond_place_ids(&self) -> Vec<PlaceId> {
-        self.place_rx.keys().copied().collect()
+        self.rx_place.keys().copied().collect()
     }
 
     fn _cond_place_locks(&self) -> Vec<Arc<PlaceLock>> {

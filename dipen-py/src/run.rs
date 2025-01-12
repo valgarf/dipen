@@ -85,11 +85,8 @@ impl RunHandle {
         if let Some(rx) = self.rx.take() {
             py.allow_threads(|| {
                 rx.blocking_recv()
-                    .map_err(|e| {
-                        PyPetriError(PetriError::Other(format!(
-                            "dipen main thread crashed: {:?}",
-                            e
-                        )))
+                    .map_err(|_| {
+                        PyPetriError(PetriError::Other(format!("dipen main thread crashed.")))
                     })
                     .and_then(|r| r)
             })
@@ -102,11 +99,8 @@ impl RunHandle {
         if let Some(rx) = self.rx.take() {
             pyo3_async_runtimes::tokio::future_into_py(py, async move {
                 rx.await
-                    .map_err(|e| {
-                        PyPetriError(PetriError::Other(format!(
-                            "dipen main thread crashed: {:?}",
-                            e
-                        )))
+                    .map_err(|_| {
+                        PyPetriError(PetriError::Other(format!("dipen main thread crashed.")))
                     })
                     .and_then(|r| r)
                     .map_err(|e| e.into())

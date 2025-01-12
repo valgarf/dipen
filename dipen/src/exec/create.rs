@@ -1,4 +1,4 @@
-use std::{any::Any, sync::Arc};
+use std::{any::Any, fmt::Display, sync::Arc};
 
 use crate::net::{ArcVariant, PlaceId, TransitionId};
 
@@ -33,4 +33,19 @@ pub trait CreateContext {
         self.arcs().filter(move |a| a.place_context().place_name() == name)
     }
     fn registry_data(&self) -> Option<Arc<dyn Any + Send + Sync>>;
+}
+
+#[derive(thiserror::Error, Debug)]
+pub struct CreationError(String);
+
+impl Display for CreationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl CreationError {
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self(reason.into())
+    }
 }

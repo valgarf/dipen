@@ -204,8 +204,11 @@ impl ETCDGate {
         self.lease = None;
     }
 
-    #[tracing::instrument(level = "info")]
-    pub async fn campaign_for_region(&mut self) -> Result<()> {
+    #[tracing::instrument(level = "info", skip(tx_leader))]
+    pub async fn campaign_for_region(
+        &mut self,
+        tx_leader: tokio::sync::watch::Sender<bool>,
+    ) -> Result<()> {
         if self.config.region.is_empty() {
             return Err(PetriError::ConfigError(
                 "Method 'campaign_for_region' requires a region to be set.".to_string(),
@@ -243,6 +246,8 @@ impl ETCDGate {
                 "Leader election failed".to_string(),
             )));
         }
+        // send errors are irrelevant here. In this case everything is shutting down anyway.
+        let _ = tx_leader.send(true);
         Ok(())
     }
 

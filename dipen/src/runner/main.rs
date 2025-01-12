@@ -9,7 +9,7 @@ use tracing::{debug, trace, warn};
 use crate::error::{PetriError, Result};
 use crate::net::{ArcVariant, NetChangeEvent, PetriNet, PetriNetBuilder, PlaceId, Revision, TransitionId};
 use crate::etcd::ETCDGate;
-use super::{context::*, ExecutorRegistry};
+use super::ExecutorRegistry;
 use super::transition::TransitionRunner;
 
 type SenderMap = HashMap<PlaceId,  tokio::sync::watch::Sender<Revision>>;
@@ -32,31 +32,11 @@ pub async fn run(
     // validate assignement (all transitions have an executor assigned and its validate function
     // succeeds): We don't want to connect to etcd if we have an inconsistent net to begin with.
     let net_builder = net_builder.only_region(&etcd.config.region)?;
-    for tr_name in net_builder.transitions().keys() {
-        // TODO: could be optimized by going through all the arcs once and storing the relevant ones
-        // for each transition.
-        let arcs = net_builder.arcs().values().filter(|a| {a.transition() == tr_name}).collect::<Vec<_>>();
-        let mut ctx = validate::ValidateContextStruct{
-            net: &net_builder,
-            transition_name: tr_name,
-            arcs,
-            registry_data: None, // will be replaced by the dispatcher
-        };
-        if let Some(exec) = executors.dispatcher.get(tr_name) {
-            let res = exec.validate(&mut ctx);
-            if let Some(reason) = res.reason() {
-                return Err(PetriError::ConfigError(format!("Validation for transition {} failed with reason: {}.", tr_name, reason)));
-            }
-        }
-        else {
-            return Err(PetriError::ConfigError(format!("Could not find an executor for transition {}", tr_name)));
-        }
-    }
+
     let cancel_token_clone = cancel_token.clone();
     let result = async {
         // connect, obtain leadership for our region, create a net using the ids stored on etcd
         etcd.connect(Some(cancel_token_clone)).await?;
-        etcd.campaign_for_region().await?;
         let net_ids = etcd.assign_ids(&net_builder).await?;
         let net = net_builder.build(&net_ids)?;
 
@@ -80,6 +60,7 @@ pub async fn run(
         
         let transition_ids: Vec<TransitionId> = net.transitions().map(|t|t.0).collect();
         let (tx_revision, rx_revision) = tokio::sync::watch::channel(Revision(0));
+        let (tx_leader, rx_leader) = tokio::sync::watch::channel(false);
         let net_lock = Arc::new(RwLock::new(net));
         let net_read_guard = net_lock.read().await;
         let mut transition_tasks = JoinSet::<()>::new();
@@ -93,24 +74,32 @@ pub async fn run(
                 }                
             }
             let tr_name = net_read_guard.transition(transition_id).unwrap().name();
-            let runner = TransitionRunner {
+            let exec = executors.dispatcher.get(tr_name).ok_or_else(|| PetriError::ConfigError(format!("Could not find an executor for transition {}", tr_name)))?;
+            let mut runner = TransitionRunner {
                 cancel_token: cancel_token.clone(), 
                 net_lock:Arc::clone(&net_lock), 
                 etcd_gate: etcd.create_transition_gate(transition_id)?, 
                 transition_id,
-                place_rx: receivers,
-                exec: executors.dispatcher.get(tr_name).unwrap().clone_empty(), 
+                rx_place: receivers,
                 rx_revision: rx_revision.clone(), 
+                rx_leader: rx_leader.clone(),
+                exec: exec.clone_empty(), 
                 place_locks,
                 region_name: region_name.clone(),
                 node_name: node_name.clone(),
                 transition_name: tr_name.into(),
                 run_data: Default::default()
             };
+            runner.create_executor().await?;
             transition_tasks.spawn(runner.run_transition()); 
         }
 
         drop(net_read_guard);
+
+        let election_fut = etcd.campaign_for_region(tx_leader);
+        let mut election_completed = false;
+        tokio::pin!(election_fut);
+
         // main loop
         // Note: a starting 'reset' event and load events should already be in the change event
         // channel. The reset event will also automatically mark all places as 'to check', so they
@@ -146,6 +135,10 @@ pub async fn run(
                         }
                     };
                     return Err(PetriError::Cancelled());
+                },
+                res = &mut election_fut, if !election_completed => {
+                    res?;
+                    election_completed = true;
                 }
             }
             if !event_buffer.is_empty() {
