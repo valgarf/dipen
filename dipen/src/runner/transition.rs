@@ -299,6 +299,7 @@ impl TransitionRunner {
                     data: net.token(to_id).unwrap().data().into(),
                 })
                 .collect(),
+            cancel_token: self.cancel_token.child_token(),
         })
     }
     async fn _run(&mut self, ctx: &mut run::RunContextStruct) -> Result<RunResult> {

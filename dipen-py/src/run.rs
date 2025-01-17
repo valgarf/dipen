@@ -3,7 +3,7 @@ use std::thread;
 
 use crate::error::*;
 use crate::etcd::PyETCDGateConfig;
-use crate::exec::RUNNING_LOOP;
+use crate::exec::{ASYNCIO, RUNNING_LOOP};
 use crate::net::PyPetriNetBuilder;
 use crate::registry::PyExecutorRegistry;
 use dipen::error::{PetriError, Result as PetriResult};
@@ -44,6 +44,8 @@ pub fn start(
     executors: &PyExecutorRegistry,
 ) -> PyResult<RunHandle> {
     let l = get_running_loop(py)?;
+    let asyncio = py.import("asyncio")?;
+    ASYNCIO.get_or_init(|| asyncio.unbind());
     RUNNING_LOOP.get_or_init(|| l.unbind());
 
     let cloned_net = Arc::clone(&net.net);
@@ -86,7 +88,7 @@ impl RunHandle {
             py.allow_threads(|| {
                 rx.blocking_recv()
                     .map_err(|_| {
-                        PyPetriError(PetriError::Other(format!("dipen main thread crashed.")))
+                        PyPetriError(PetriError::Other("dipen main thread crashed.".to_string()))
                     })
                     .and_then(|r| r)
             })
@@ -100,7 +102,7 @@ impl RunHandle {
             pyo3_async_runtimes::tokio::future_into_py(py, async move {
                 rx.await
                     .map_err(|_| {
-                        PyPetriError(PetriError::Other(format!("dipen main thread crashed.")))
+                        PyPetriError(PetriError::Other("dipen main thread crashed.".to_string()))
                     })
                     .and_then(|r| r)
                     .map_err(|e| e.into())
