@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use tokio_util::sync::CancellationToken;
+
 use crate::net::{PlaceId, TokenId};
 
 pub trait RunTokenContext: Send + Sync {
@@ -11,6 +13,8 @@ pub trait RunTokenContext: Send + Sync {
 }
 pub trait RunContext: Send + Sync {
     fn tokens(&self) -> impl Iterator<Item = &impl RunTokenContext> + Send + Sync;
+
+    fn cancellation_token(&self) -> CancellationToken;
 }
 #[derive(Clone)]
 pub struct RunResult {

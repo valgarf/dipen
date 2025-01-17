@@ -1,8 +1,11 @@
+use tokio_util::sync::CancellationToken;
+
 use crate::exec::{RunContext, RunTokenContext};
 use crate::net::{PlaceId, TokenId};
 
 pub struct RunContextStruct {
     pub tokens: Vec<RunTokenContextStruct>,
+    pub cancel_token: CancellationToken,
 }
 
 pub struct RunTokenContextStruct {
@@ -14,6 +17,10 @@ pub struct RunTokenContextStruct {
 impl RunContext for RunContextStruct {
     fn tokens(&self) -> impl Iterator<Item = &impl crate::exec::RunTokenContext> {
         self.tokens.iter()
+    }
+
+    fn cancellation_token(&self) -> CancellationToken {
+        self.cancel_token.clone()
     }
 }
 
