@@ -11,10 +11,11 @@ use tracing::{error, info, trace};
 use super::context::*;
 use super::dispatch::TransitionExecutorDispatch;
 use crate::error::{PetriError, Result};
-use crate::etcd::{ETCDTransitionGate, FencingToken};
-use crate::etcd::{PlaceLock, PlaceLockData};
+use crate::etcd::ETCDTransitionGate;
+use crate::etcd::{ETCDPlaceLock, ETCDPlaceLockData};
 use crate::exec::{CheckStartChoice, RunResult, RunResultData};
 use crate::net::{self, PlaceId, Revision, TokenId};
+use crate::state::{FencingToken, PlaceLock, PlaceLockData};
 
 pub(crate) struct TransitionRunner {
     pub cancel_token: CancellationToken, // for shutting the transition runner down
@@ -25,8 +26,8 @@ pub(crate) struct TransitionRunner {
     pub rx_place: HashMap<net::PlaceId, tokio::sync::watch::Receiver<Revision>>, // watch changes on each place
     pub rx_revision: tokio::sync::watch::Receiver<Revision>, // watch current revision
     pub rx_leader: tokio::sync::watch::Receiver<bool>, // true if leader election was successful
-    pub place_locks: HashMap<net::PlaceId, Arc<PlaceLock>>, // for acquiring globally unique locks to relevant places
-    pub run_data: RunData,                                  // internal state
+    pub place_locks: HashMap<net::PlaceId, Arc<ETCDPlaceLock>>, // for acquiring globally unique locks to relevant places
+    pub run_data: RunData,                                      // internal state
     // used for logging and other messages
     pub region_name: String,
     pub node_name: String,
@@ -237,7 +238,7 @@ impl TransitionRunner {
         self.rx_place.keys().copied().collect()
     }
 
-    fn _cond_place_locks(&self) -> Vec<Arc<PlaceLock>> {
+    fn _cond_place_locks(&self) -> Vec<Arc<ETCDPlaceLock>> {
         self._cond_place_ids()
             .iter()
             .map(|pl_id| {
@@ -246,12 +247,15 @@ impl TransitionRunner {
             .collect()
     }
 
-    async fn _lock<'a>(
-        locks: &'a mut Vec<Arc<PlaceLock>>,
+    async fn _lock<'a, PL>(
+        locks: &'a mut Vec<Arc<PL>>,
         rx_revision: Option<&mut tokio::sync::watch::Receiver<Revision>>,
-    ) -> Result<Vec<MutexGuard<'a, PlaceLockData>>> {
+    ) -> Result<Vec<MutexGuard<'a, PL::PlaceLockData>>>
+    where
+        PL: PlaceLock,
+    {
         locks.sort_by_key(|pl_lock| pl_lock.place_id());
-        let mut guards: Vec<MutexGuard<PlaceLockData>> = Vec::with_capacity(locks.len());
+        let mut guards: Vec<MutexGuard<PL::PlaceLockData>> = Vec::with_capacity(locks.len());
         for l in locks {
             guards.push(l.acquire().await?);
         }
@@ -269,12 +273,12 @@ impl TransitionRunner {
     }
 
     fn _get_fencing_tokens<'a>(
-        guards: &'a Vec<MutexGuard<PlaceLockData>>,
+        guards: &'a Vec<MutexGuard<ETCDPlaceLockData>>,
     ) -> Vec<&'a FencingToken> {
         guards.iter().map(|g| g.fencing_token()).collect()
     }
 
-    fn _release_locks(mut guards: Vec<MutexGuard<PlaceLockData>>, revision: Revision) {
+    fn _release_locks(mut guards: Vec<MutexGuard<ETCDPlaceLockData>>, revision: Revision) {
         for g in &mut guards {
             g.set_min_revision(revision);
         }
@@ -306,7 +310,7 @@ impl TransitionRunner {
         Ok(self.exec.run(ctx).await)
     }
 
-    async fn _target_place_locks(&self, res: &RunResultData) -> Vec<Arc<PlaceLock>> {
+    async fn _target_place_locks(&self, res: &RunResultData) -> Vec<Arc<ETCDPlaceLock>> {
         // TODO: is it necessary to lock the places we took tokens from?
         // We will be moving / destroying those tokens and the transitions start method's may use
         // their existence to decide wether to start or not.

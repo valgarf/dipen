@@ -18,14 +18,15 @@ use tracing::{debug, error, info, trace, warn};
 
 use crate::{
     error::{PetriError, Result},
-    etcd::PlaceLock,
+    etcd::ETCDPlaceLock,
     net::{
         NetChange, NetChangeEvent, PetriNetBuilder, PetriNetIds, PlaceId, Revision, TokenId,
         TransitionId,
     },
+    state::{LeaseId, PlaceLock as _, Version},
 };
 
-use super::{ETCDTransitionGate, LeaseId, Version};
+use super::ETCDTransitionGate;
 
 pub struct ETCDGate {
     pub(crate) config: ETCDConfig,
@@ -35,7 +36,7 @@ pub struct ETCDGate {
     keep_alive_join_handle: Option<JoinHandle<()>>,
     watching_join_handle: Option<JoinHandle<()>>,
     lock_requests_handle: Option<JoinHandle<()>>,
-    place_locks: HashMap<PlaceId, Arc<PlaceLock>>,
+    place_locks: HashMap<PlaceId, Arc<ETCDPlaceLock>>,
 }
 
 #[derive(Builder, Clone)]
@@ -302,7 +303,7 @@ impl ETCDGate {
         let cancel_token = self._cancel_token()?.clone();
         let lease = self._lease()?;
         let (tx_locks, rx_locks) = tokio::sync::mpsc::channel(128);
-        let mut place_locks = HashMap::<PlaceId, Arc<PlaceLock>>::new();
+        let mut place_locks = HashMap::<PlaceId, Arc<ETCDPlaceLock>>::new();
         for &pl_id in &place_ids {
             place_locks.insert(pl_id, self.place_lock(pl_id)?);
         }
@@ -342,14 +343,14 @@ impl ETCDGate {
         Ok(())
     }
 
-    pub fn place_lock(&mut self, pl_id: PlaceId) -> Result<Arc<PlaceLock>> {
+    pub fn place_lock(&mut self, pl_id: PlaceId) -> Result<Arc<ETCDPlaceLock>> {
         let lease = self._lease()?;
         let prefix = &self.config.prefix;
         // Note: this seems inefficient (depending on clone cost)
         // Will hopefully not be called too often
         let client = self._client()?.clone();
         let place_lock = self.place_locks.entry(pl_id).or_insert_with(|| {
-            Arc::new(PlaceLock::new(client.lock_client(), prefix.clone(), pl_id, lease))
+            Arc::new(ETCDPlaceLock::new(client.lock_client(), prefix.clone(), pl_id, lease))
         });
         Ok(place_lock.clone())
     }
@@ -411,7 +412,7 @@ impl ETCDGate {
     }
 
     async fn _lock_requests(
-        place_locks: HashMap<PlaceId, Arc<PlaceLock>>,
+        place_locks: HashMap<PlaceId, Arc<ETCDPlaceLock>>,
         mut rx_locks: tokio::sync::mpsc::Receiver<HashSet<PlaceId>>,
     ) -> Result<()> {
         while let Some(msg) = rx_locks.recv().await {

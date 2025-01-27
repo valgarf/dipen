@@ -5,7 +5,8 @@ use crate::{
     net::{PlaceId, Revision, TokenId, TransitionId},
 };
 
-use super::{ETCDGate, FencingToken, LeaseId};
+use super::ETCDGate;
+use crate::state::{FencingToken, LeaseId};
 
 pub struct ETCDTransitionGate {
     pub(super) client: KvClient,

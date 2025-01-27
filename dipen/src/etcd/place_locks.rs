@@ -7,46 +7,50 @@ use tracing::info;
 use crate::{
     error::Result,
     net::{PlaceId, Revision},
+    state::{PlaceLock, PlaceLockData},
 };
 
-use super::{FencingToken, LeaseId};
-pub struct PlaceLock {
-    pub(super) value: Mutex<PlaceLockData>,
-    pub(super) prefix: String,
-    pub(super) place_id: PlaceId,
-    pub(super) lease: LeaseId,
+use crate::state::{FencingToken, LeaseId};
+pub struct ETCDPlaceLock {
+    value: Mutex<ETCDPlaceLockData>,
+    prefix: String,
+    place_id: PlaceId,
+    lease: LeaseId,
 }
 
-pub struct PlaceLockData {
+pub struct ETCDPlaceLockData {
     fencing_token: FencingToken,
     min_revision: Revision,
     lock_client: LockClient,
 }
 
-impl PlaceLock {
+impl ETCDPlaceLock {
     pub fn new(lock_client: LockClient, prefix: String, place_id: PlaceId, lease: LeaseId) -> Self {
-        let value = Mutex::new(PlaceLockData {
+        let value = Mutex::new(ETCDPlaceLockData {
             fencing_token: Default::default(),
             min_revision: Default::default(),
             lock_client,
         });
-        PlaceLock { value, prefix, place_id, lease }
-    }
-
-    pub fn place_id(&self) -> PlaceId {
-        self.place_id
+        ETCDPlaceLock { value, prefix, place_id, lease }
     }
 
     fn _key(&self) -> String {
         format!("{}pl/{}/lock", self.prefix, self.place_id.0)
     }
+}
 
-    // Acquire the lock for this place.
-    // Returns a mutex guard, which holds PlaceLockData (i.e. fencing token, revision)
-    // Interactions with the local net should wait for this revision before doing anything.
-    // All changes of the etcd state regarding this place should be safeguarded using the fencing
-    // token
-    pub async fn acquire(&self) -> Result<MutexGuard<PlaceLockData>> {
+impl PlaceLock for ETCDPlaceLock {
+    type PlaceLockData = ETCDPlaceLockData;
+    fn place_id(&self) -> PlaceId {
+        self.place_id
+    }
+
+    /// Acquire the lock for this place.
+    /// Returns a mutex guard, which holds PlaceLockData (i.e. fencing token, revision)
+    /// Interactions with the local net should wait for this revision before doing anything.
+    /// All changes of the etcd state regarding this place should be safeguarded using the fencing
+    /// token
+    async fn acquire(&self) -> Result<MutexGuard<ETCDPlaceLockData>> {
         let mut value = self.value.lock().await;
         if value.fencing_token.0.is_empty() {
             let resp = value
@@ -65,7 +69,7 @@ impl PlaceLock {
         Ok(value)
     }
 
-    pub async fn external_acquire(&self) -> Result<()> {
+    async fn external_acquire(&self) -> Result<()> {
         let mut value = self.value.lock().await;
         if !value.fencing_token.0.is_empty() {
             // Note: Error will result in shutdown of the runner, revoking its lease and releasing
@@ -77,17 +81,17 @@ impl PlaceLock {
     }
 }
 
-impl PlaceLockData {
-    pub fn min_revision(&self) -> Revision {
+impl PlaceLockData for ETCDPlaceLockData {
+    fn min_revision(&self) -> Revision {
         self.min_revision
     }
 
-    pub fn set_min_revision(&mut self, value: Revision) -> Revision {
+    fn set_min_revision(&mut self, value: Revision) -> Revision {
         self.min_revision = max(self.min_revision, value);
         self.min_revision
     }
 
-    pub fn fencing_token(&self) -> &FencingToken {
+    fn fencing_token(&self) -> &FencingToken {
         &self.fencing_token
     }
 }

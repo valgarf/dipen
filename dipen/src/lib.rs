@@ -333,5 +333,6 @@ pub mod etcd;
 pub mod exec;
 pub mod net;
 pub mod runner;
+pub mod state;
 
 pub use error::Result;
