@@ -7,10 +7,10 @@ use tracing::info;
 use crate::{
     error::Result,
     net::{PlaceId, Revision},
-    state::{PlaceLock, PlaceLockData},
+    storage,
 };
 
-use crate::state::{FencingToken, LeaseId};
+use crate::storage::{FencingToken, LeaseId};
 pub struct ETCDPlaceLock {
     value: Mutex<ETCDPlaceLockData>,
     prefix: String,
@@ -39,7 +39,7 @@ impl ETCDPlaceLock {
     }
 }
 
-impl PlaceLock for ETCDPlaceLock {
+impl storage::traits::PlaceLockClient for ETCDPlaceLock {
     type PlaceLockData = ETCDPlaceLockData;
     fn place_id(&self) -> PlaceId {
         self.place_id
@@ -81,7 +81,7 @@ impl PlaceLock for ETCDPlaceLock {
     }
 }
 
-impl PlaceLockData for ETCDPlaceLockData {
+impl storage::traits::PlaceLockData for ETCDPlaceLockData {
     fn min_revision(&self) -> Revision {
         self.min_revision
     }

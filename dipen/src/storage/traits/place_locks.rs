@@ -2,8 +2,8 @@ use tokio::sync::MutexGuard;
 
 use crate::net::{PlaceId, Revision};
 
-use super::FencingToken;
 use crate::error::Result;
+use crate::storage::FencingToken;
 
 pub trait PlaceLockData {
     fn min_revision(&self) -> Revision;
@@ -11,7 +11,7 @@ pub trait PlaceLockData {
     fn fencing_token(&self) -> &FencingToken;
 }
 
-pub trait PlaceLock {
+pub trait PlaceLockClient {
     type PlaceLockData: PlaceLockData;
     fn place_id(&self) -> PlaceId;
     fn acquire(

@@ -101,10 +101,10 @@
 //! #
 //! # use dipen::{
 //! #     error::Result as PetriResult,
-//! #     etcd::{ETCDConfigBuilder, ETCDGate},
+//! #     storage::etcd::{ETCDConfigBuilder, ETCDStorageClient},
 //! #     exec::{
-//! #         CheckStartResult, CreateArcContext, CreatePlaceContext, RunResult, TransitionExecutor,
-//! #         ValidationResult,
+//! #         CheckStartResult, CreateArcContext, CreatePlaceContext, CreationError, RunResult,
+//! #         TransitionExecutor,
 //! #     },
 //! #     net,
 //! #     runner::ExecutorRegistry,
@@ -155,7 +155,7 @@
 //!         .node_name("node1") // to identify the node in logs / on the etcd server
 //!         .region("test-region") // must match your transition regions
 //!         .build()?;
-//!     let etcd = ETCDGate::new(config);
+//!     let etcd = ETCDStorageClient::new(config);
 //!
 //!     dipen::runner::run(net, etcd, executors, shutdown_token.clone()).await
 //! }
@@ -166,32 +166,20 @@
 //! }
 //!
 //! impl TransitionExecutor for PlaceNew {
-//!     // Called in the beginning for every transition in the net that is
-//!     // associated with this executor to check for misconfigurations.
-//!     fn validate(ctx: &impl dipen::exec::ValidateContext) -> ValidationResult
+//!     // An instance is created for every transition in the net with this executor.
+//!     // The function should check for misconfigurations and return an error in such a case.
+//!     fn new(ctx: &impl dipen::exec::CreateContext) -> Result<Self, CreationError>
 //!     where
 //!         Self: Sized,
 //!     {
-//!         // check if the transition can work with the configured arcs.
-//!         // If it cannot, return a reason.
-//!         if ctx.arcs().count() == 1
-//!            && ctx.arcs_out().count() == 1
-//!            && ctx.arcs_cond().count() == 1
+//!         if ctx.arcs().count() != 1
+//!            || ctx.arcs_out().count() != 1
+//!            || ctx.arcs_cond().count() != 1
 //!         {
-//!             ValidationResult::succeeded()
-//!         } else {
-//!             ValidationResult::failed("Need exactly one conditional outgoing arc!")
+//!             return Err(CreationError::new("Need exactly one incoming and one outgoing arc"));
 //!         }
-//!     }
-//!
-//!     // After validation, an instance is created for every transition in the net.
-//!     // This function should not fail, check all preconditions in `validate`.
-//!     fn new(ctx: &impl dipen::exec::CreateContext) -> Self
-//!     where
-//!         Self: Sized,
-//!     {
 //!         let pl_out = ctx.arcs_out().next().unwrap().place_context().place_id();
-//!         Self { pl_out }
+//!         Ok(Self { pl_out })
 //!     }
 //!
 //!     // Called to check if the transition can fire.
@@ -235,9 +223,9 @@
 //!
 //! The current implementation does roughly the following:
 //! - build a reduced petri net, only containing the region we want to run
-//! - call [`exec::TransitionExecutor::validate`] on all transitions, stopping with an error in case
-//!   of a failure
-//! - connect to etcd
+//! - create a transition instance for each transition in the net using
+//!   [`exec::TransitionExecutor::new`], stopping with an error in case of failure.
+//! - connect to etcd, listen to all changes.
 //! - try to become elected leader for the given region - this ensures only one runner is active for
 //!   a region. It also allows to start multiple runners and a second one will immediatly start as
 //!   soon as the first one revokes or looses its etcd lease.
@@ -329,10 +317,9 @@
 //!
 
 pub mod error;
-pub mod etcd;
 pub mod exec;
 pub mod net;
 pub mod runner;
-pub mod state;
+pub mod storage;
 
 pub use error::Result;

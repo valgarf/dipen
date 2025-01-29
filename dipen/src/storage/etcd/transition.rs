@@ -3,22 +3,23 @@ use etcd_client::{Compare, CompareOp, DeleteOptions, KvClient, Txn, TxnOp};
 use crate::{
     error::{PetriError, Result},
     net::{PlaceId, Revision, TokenId, TransitionId},
+    storage,
 };
 
-use super::ETCDGate;
-use crate::state::{FencingToken, LeaseId};
+use super::ETCDStorageClient;
+use crate::storage::{FencingToken, LeaseId};
 
-pub struct ETCDTransitionGate {
+pub struct ETCDTransitionClient {
     pub(super) client: KvClient,
     pub(super) transition_id: TransitionId,
     pub(super) prefix: String,
     pub(super) lease: LeaseId,
 }
 
-impl ETCDTransitionGate {
-    pub async fn start_transition(
+impl storage::traits::TransitionClient for ETCDTransitionClient {
+    async fn start_transition(
         &mut self,
-        take: impl IntoIterator<Item = (PlaceId, TokenId)>,
+        take: impl IntoIterator<Item = (PlaceId, TokenId)> + Send,
         fencing_tokens: &[&FencingToken],
     ) -> Result<Revision> {
         let txn = Txn::new()
@@ -55,11 +56,11 @@ impl ETCDTransitionGate {
         }
     }
 
-    pub async fn end_transition(
+    async fn end_transition(
         &mut self,
-        place: impl IntoIterator<Item = (TokenId, PlaceId, PlaceId, Vec<u8>)>,
-        create: impl IntoIterator<Item = (PlaceId, Vec<u8>)>,
-        destroy: impl IntoIterator<Item = (PlaceId, TokenId)>,
+        place: impl IntoIterator<Item = (TokenId, PlaceId, PlaceId, Vec<u8>)> + Send,
+        create: impl IntoIterator<Item = (PlaceId, Vec<u8>)> + Send,
+        destroy: impl IntoIterator<Item = (PlaceId, TokenId)> + Send,
         fencing_tokens: &[&FencingToken],
     ) -> Result<Revision> {
         // check if token is still at place? Should not happen if locks work correctly
@@ -69,8 +70,10 @@ impl ETCDTransitionGate {
             .collect::<Vec<Compare>>();
 
         let mut new_tokens = vec![];
+        let create: Vec<(PlaceId, Vec<u8>)> = create.into_iter().collect();
         for (pl_id, data) in create {
-            let new_id = ETCDGate::_get_next_id(&mut self.client, &self.prefix, "to").await?;
+            let new_id =
+                ETCDStorageClient::_get_next_id(&mut self.client, &self.prefix, "to").await?;
             new_tokens.push((TokenId(new_id as u64), pl_id, data));
         }
         let ops = place

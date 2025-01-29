@@ -16,19 +16,19 @@ use tokio::{join, select, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
+use super::ETCDPlaceLock;
 use crate::{
     error::{PetriError, Result},
-    etcd::ETCDPlaceLock,
     net::{
         NetChange, NetChangeEvent, PetriNetBuilder, PetriNetIds, PlaceId, Revision, TokenId,
         TransitionId,
     },
-    state::{LeaseId, PlaceLock as _, Version},
+    storage::{self, traits::PlaceLockClient as _, LeaseId, Version},
 };
 
-use super::ETCDTransitionGate;
+use super::ETCDTransitionClient;
 
-pub struct ETCDGate {
+pub struct ETCDStorageClient {
     pub(crate) config: ETCDConfig,
     cancel_token: Option<CancellationToken>,
     client: Option<etcd_client::Client>,
@@ -125,26 +125,9 @@ macro_rules! cancelable_send {
     };
 }
 
-/// Communication with etcd servers
-///
-/// Data Layout on etcd:
-///
-/// {prefix}/id_generator/pl -> version of this field is used to create unique ids for places
-/// {prefix}/id_generator/tr -> ... for transitions
-/// {prefix}/id_generator/to -> ... for tokens
-/// {prefix}/region/{region-name}/election -> used as election for the given region. Child key values indicate running nodes.
-/// {prefix}/place_ids/{place-name} -> value is id of that place
-/// {prefix}/transition_ids/{transition-name} -> value is id of that transition
-/// {prefix}/transition_ids/{transition-name}/region -> value is region of that transition
-/// {prefix}/pl/{place-id}/{token-id} -> value is the token data, place id provides the position
-/// {prefix}/pl/{place-id}/{token-id}/{transition-id} -> value currently unused, token has been taken by the given transition (leased, will be undone if cancelled)
-/// {prefix}/pl/{place-id}/lock/{lease-id} -> Lock request for place by node identified by its lease. NOTE: locks are kept indefinitely. If a second lock request appears, the lock owner should free its lock as soon as possible.
-/// {prefix}/tr/{region-name}/{transition-id}/request/{request-key} -> value is the input data, request to execute this manual transition. TODO: not yet implemented
-/// {prefix}/tr/{region-name}/{transition-id}/request/{request-key}/response -> request has been fulfilled (transition has been executed). It may provide reponse data as value. Request owner should cler the field. TODO: not yet implemented
-///
-impl ETCDGate {
+impl ETCDStorageClient {
     pub fn new(config: ETCDConfig) -> Self {
-        ETCDGate {
+        ETCDStorageClient {
             config,
             cancel_token: None,
             client: None,
@@ -154,205 +137,6 @@ impl ETCDGate {
             lock_requests_handle: None,
             place_locks: Default::default(),
         }
-    }
-
-    #[tracing::instrument(level = "info", skip(cancel_token, self))]
-    pub async fn connect(&mut self, cancel_token: Option<CancellationToken>) -> Result<()> {
-        let cancel_token = cancel_token.unwrap_or_default();
-        self.cancel_token = Some(cancel_token.clone());
-        let result: Result<()> = async move {
-            let client = etcd_client::Client::connect(
-                &self.config.endpoints,
-                self.config.connect_options.clone(),
-            )
-            .await?;
-            self.client = Some(client);
-            self._get_lease().await?;
-            self.keep_alive_join_handle = Some(tokio::spawn(ETCDGate::_keep_alive(
-                self._cancel_token()?.clone(),
-                self._client_mut()?.lease_client(),
-                self._lease()?,
-                self.config.lease_ttl,
-            )));
-            Ok(())
-        }
-        .await;
-        // catch:
-        result.inspect_err(|_| {
-            cancel_token.cancel();
-        })
-    }
-
-    #[tracing::instrument(level = "info")]
-    pub async fn disconnect(&mut self) {
-        if let Some(cancel_token) = self.cancel_token.as_ref() {
-            cancel_token.cancel();
-        }
-        if let Some(join_handle) = self.keep_alive_join_handle.as_mut() {
-            let _ = join!(join_handle); // we ignore any errors from inside that handle
-        }
-        if let Some(join_handle) = self.watching_join_handle.as_mut() {
-            let _ = join!(join_handle); // we ignore any errors from inside that handle
-        }
-        if let Some(join_handle) = self.lock_requests_handle.as_mut() {
-            let _ = join!(join_handle); // we ignore any errors from inside that handle
-        }
-        self.cancel_token = None;
-        self.keep_alive_join_handle = None;
-        self.watching_join_handle = None;
-        self.lock_requests_handle = None;
-        self.client = None;
-        self.lease = None;
-    }
-
-    #[tracing::instrument(level = "info", skip(tx_leader))]
-    pub async fn campaign_for_region(
-        &mut self,
-        tx_leader: tokio::sync::watch::Sender<bool>,
-    ) -> Result<()> {
-        if self.config.region.is_empty() {
-            return Err(PetriError::ConfigError(
-                "Method 'campaign_for_region' requires a region to be set.".to_string(),
-            ));
-        }
-        let election_name =
-            self.config.prefix.clone() + "region/" + self.config.region.as_ref() + "/election";
-        let lease_id = self._lease()?;
-        let mut election_client = self._client_mut()?.election_client();
-        let op = election_client.campaign(
-            election_name.clone(),
-            self.config.node_name.as_ref() as &str,
-            lease_id.0,
-        );
-        let mut dur = Duration::from_secs(10);
-
-        let waiter = async {
-            loop {
-                tokio::time::sleep(dur).await;
-                info!(election_name, "Waiting on leadership.");
-                dur = min(dur * 2, Duration::from_secs(300));
-            }
-        };
-        let resp = select! {
-            resp = op => {resp?}
-            _ = self._cancel_token()?.cancelled() => {return Err(PetriError::Cancelled())}
-            _ = waiter => {panic!("waiter should never finish.")}
-        };
-        if let Some(leader_key) = resp.leader() {
-            let election_name =
-                std::str::from_utf8(leader_key.name()).unwrap_or("<leader name decoding failed>");
-            info!(election_name, "Became elected leader.",);
-        } else {
-            return Err(PetriError::ETCDError(etcd_client::Error::ElectError(
-                "Leader election failed".to_string(),
-            )));
-        }
-        // send errors are irrelevant here. In this case everything is shutting down anyway.
-        let _ = tx_leader.send(true);
-        Ok(())
-    }
-
-    pub fn create_transition_gate(
-        &mut self,
-        transition_id: TransitionId,
-    ) -> Result<ETCDTransitionGate> {
-        Ok(ETCDTransitionGate {
-            client: self._client_mut()?.kv_client(),
-            transition_id,
-            prefix: self.config.prefix.clone(),
-            lease: self._lease()?,
-        })
-    }
-    #[tracing::instrument(level = "info", skip(builder), fields(transition_count = builder.transitions().len(), place_count = builder.transitions().len()) )]
-    pub async fn assign_ids(&mut self, builder: &PetriNetBuilder) -> Result<PetriNetIds> {
-        let cancel_token = self._cancel_token()?.clone();
-        let op = async {
-            let mut result = PetriNetIds::default();
-            for tr_name in builder.transitions().keys() {
-                let key = self.config.prefix.clone() + "transition_ids/" + tr_name;
-                let tr_id = self._get_or_assign_id(key, "tr").await?;
-                result.transitions.insert(tr_name.clone(), TransitionId(tr_id as u64));
-                let key = self.config.prefix.clone() + "transition_ids/" + tr_name + "/region";
-                self._check_or_assign_region(key).await?;
-            }
-            for pl_name in builder.places().keys() {
-                let key = self.config.prefix.clone() + "place_ids/" + pl_name;
-                let pl_id = self._get_or_assign_id(key, "pl").await?;
-                result.places.insert(pl_name.clone(), PlaceId(pl_id as u64));
-            }
-            Ok::<PetriNetIds, PetriError>(result)
-        };
-        let result = select! {
-            res = op => {res?},
-            _ = cancel_token.cancelled() => {return Err(PetriError::Cancelled())}
-        };
-
-        Ok(result)
-    }
-
-    #[tracing::instrument(level = "info", skip(tx_events, place_ids, _transition_ids))]
-    pub async fn load_data(
-        &mut self,
-        tx_events: tokio::sync::mpsc::Sender<NetChangeEvent>,
-        place_ids: HashSet<PlaceId>,
-        _transition_ids: HashSet<TransitionId>,
-    ) -> Result<()> {
-        let revision = self._create_initial_events(&tx_events, &place_ids).await?;
-        let prefix = self.config.prefix.clone();
-        let watch_client = self._client_mut()?.watch_client();
-        let cancel_token = self._cancel_token()?.clone();
-        let lease = self._lease()?;
-        let (tx_locks, rx_locks) = tokio::sync::mpsc::channel(128);
-        let mut place_locks = HashMap::<PlaceId, Arc<ETCDPlaceLock>>::new();
-        for &pl_id in &place_ids {
-            place_locks.insert(pl_id, self.place_lock(pl_id)?);
-        }
-        self.lock_requests_handle = Some(tokio::spawn(async move {
-            let fut = ETCDGate::_lock_requests(place_locks, rx_locks);
-            select! {
-                res = fut =>{ match res {
-                    Err(PetriError::Cancelled()) => {}
-                    Err(err) => {error!("Handling lock requests failed with: {}.", err); cancel_token.cancel();}
-                    _ => {}
-                }}
-                _ = cancel_token.cancelled() => {}
-            }
-        }));
-        let cancel_token = self._cancel_token()?.clone();
-        self.watching_join_handle = Some(tokio::spawn(async move {
-            let watcher_fut = ETCDGate::_watch_events(
-                prefix,
-                revision,
-                watch_client,
-                tx_events,
-                tx_locks,
-                place_ids,
-                cancel_token.clone(),
-                lease,
-            );
-            tokio::pin!(watcher_fut);
-            select! {
-                res = watcher_fut =>{ match res {
-                    Err(PetriError::Cancelled()) => {}
-                    Err(err) => {error!("Watching etcd for changes failed with: {}.", err); cancel_token.cancel();}
-                    _ => {}
-                }}
-                _ = cancel_token.cancelled() => {}
-            }
-        }));
-        Ok(())
-    }
-
-    pub fn place_lock(&mut self, pl_id: PlaceId) -> Result<Arc<ETCDPlaceLock>> {
-        let lease = self._lease()?;
-        let prefix = &self.config.prefix;
-        // Note: this seems inefficient (depending on clone cost)
-        // Will hopefully not be called too often
-        let client = self._client()?.clone();
-        let place_lock = self.place_locks.entry(pl_id).or_insert_with(|| {
-            Arc::new(ETCDPlaceLock::new(client.lock_client(), prefix.clone(), pl_id, lease))
-        });
-        Ok(place_lock.clone())
     }
 
     async fn _create_initial_events(
@@ -385,7 +169,7 @@ impl ETCDGate {
             })
             .collect();
 
-        let (evts, _external_lock_requests) = ETCDGate::_analyze_place_events(
+        let (evts, _external_lock_requests) = ETCDStorageClient::_analyze_place_events(
             self.config.prefix.clone(),
             &events,
             place_ids,
@@ -468,8 +252,12 @@ impl ETCDGate {
                 })
                 .collect();
 
-            let (evts, lock_requests) =
-                ETCDGate::_analyze_place_events(prefix.clone(), &events, &place_ids, lease)?;
+            let (evts, lock_requests) = ETCDStorageClient::_analyze_place_events(
+                prefix.clone(),
+                &events,
+                &place_ids,
+                lease,
+            )?;
             for evt in evts {
                 cancelable_send!(
                     tx_events,
@@ -520,7 +308,7 @@ impl ETCDGate {
             taken.clear();
             released.clear();
             for evt in chunk {
-                let split = ETCDGate::_split_key(&prefix, evt.key)?;
+                let split = ETCDStorageClient::_split_key(&prefix, evt.key)?;
                 if split.len() < 3 || split.len() > 4 {
                     continue;
                 }
@@ -738,7 +526,8 @@ impl ETCDGate {
             let resp = kv.get(key.clone(), None).await?;
             let id: i64 = if resp.kvs().is_empty() {
                 // safeguard with some kind of lock? unlikely to be a problem here
-                let id = ETCDGate::_get_next_id(&mut kv, &self.config.prefix, ktype).await?;
+                let id =
+                    ETCDStorageClient::_get_next_id(&mut kv, &self.config.prefix, ktype).await?;
                 let txn = Txn::new()
                     // when 'key' has not yet been created ...
                     .when([Compare::create_revision(key.clone(), CompareOp::Less, 1)])
@@ -858,7 +647,7 @@ impl ETCDGate {
         lease_ttl: Duration,
     ) {
         select! {
-            res = ETCDGate::_keep_alive_loop(&mut lease_client, lease_id, lease_ttl) => {let _ = res.inspect_err(|err|{
+            res = ETCDStorageClient::_keep_alive_loop(&mut lease_client, lease_id, lease_ttl) => {let _ = res.inspect_err(|err|{
                 error!("Keep alive failed with: {}.", err)
             });}
             _ = cancel_token.cancelled() => {}
@@ -897,12 +686,231 @@ impl ETCDGate {
         info!(lease_id, lease_ttl, "Lease granted.");
         Ok(())
     }
+}
+/// Communication with etcd servers
+///
+/// Data Layout on etcd:
+///
+/// {prefix}/id_generator/pl -> version of this field is used to create unique ids for places
+/// {prefix}/id_generator/tr -> ... for transitions
+/// {prefix}/id_generator/to -> ... for tokens
+/// {prefix}/region/{region-name}/election -> used as election for the given region. Child key values indicate running nodes.
+/// {prefix}/place_ids/{place-name} -> value is id of that place
+/// {prefix}/transition_ids/{transition-name} -> value is id of that transition
+/// {prefix}/transition_ids/{transition-name}/region -> value is region of that transition
+/// {prefix}/pl/{place-id}/{token-id} -> value is the token data, place id provides the position
+/// {prefix}/pl/{place-id}/{token-id}/{transition-id} -> value currently unused, token has been taken by the given transition (leased, will be undone if cancelled)
+/// {prefix}/pl/{place-id}/lock/{lease-id} -> Lock request for place by node identified by its lease. NOTE: locks are kept indefinitely. If a second lock request appears, the lock owner should free its lock as soon as possible.
+/// {prefix}/tr/{region-name}/{transition-id}/request/{request-key} -> value is the input data, request to execute this manual transition. TODO: not yet implemented
+/// {prefix}/tr/{region-name}/{transition-id}/request/{request-key}/response -> request has been fulfilled (transition has been executed). It may provide reponse data as value. Request owner should cler the field. TODO: not yet implemented
+///
+impl storage::traits::StorageClient for ETCDStorageClient {
+    type TransitionClient = ETCDTransitionClient;
+    type PlaceLockClient = ETCDPlaceLock;
+    #[tracing::instrument(level = "info", skip(cancel_token, self))]
+    async fn connect(&mut self, cancel_token: Option<CancellationToken>) -> Result<()> {
+        let cancel_token = cancel_token.unwrap_or_default();
+        self.cancel_token = Some(cancel_token.clone());
+        let result: Result<()> = async move {
+            let client = etcd_client::Client::connect(
+                &self.config.endpoints,
+                self.config.connect_options.clone(),
+            )
+            .await?;
+            self.client = Some(client);
+            self._get_lease().await?;
+            self.keep_alive_join_handle = Some(tokio::spawn(ETCDStorageClient::_keep_alive(
+                self._cancel_token()?.clone(),
+                self._client_mut()?.lease_client(),
+                self._lease()?,
+                self.config.lease_ttl,
+            )));
+            Ok(())
+        }
+        .await;
+        // catch:
+        result.inspect_err(|_| {
+            cancel_token.cancel();
+        })
+    }
 
-    // pub async fn ensure_net
+    #[tracing::instrument(level = "info")]
+    async fn disconnect(&mut self) {
+        if let Some(cancel_token) = self.cancel_token.as_ref() {
+            cancel_token.cancel();
+        }
+        if let Some(join_handle) = self.keep_alive_join_handle.as_mut() {
+            let _ = join!(join_handle); // we ignore any errors from inside that handle
+        }
+        if let Some(join_handle) = self.watching_join_handle.as_mut() {
+            let _ = join!(join_handle); // we ignore any errors from inside that handle
+        }
+        if let Some(join_handle) = self.lock_requests_handle.as_mut() {
+            let _ = join!(join_handle); // we ignore any errors from inside that handle
+        }
+        self.cancel_token = None;
+        self.keep_alive_join_handle = None;
+        self.watching_join_handle = None;
+        self.lock_requests_handle = None;
+        self.client = None;
+        self.lease = None;
+    }
+
+    #[tracing::instrument(level = "info", skip(tx_leader))]
+    async fn campaign_for_region(
+        &mut self,
+        tx_leader: tokio::sync::watch::Sender<bool>,
+    ) -> Result<()> {
+        if self.config.region.is_empty() {
+            return Err(PetriError::ConfigError(
+                "Method 'campaign_for_region' requires a region to be set.".to_string(),
+            ));
+        }
+        let election_name =
+            self.config.prefix.clone() + "region/" + self.config.region.as_ref() + "/election";
+        let lease_id = self._lease()?;
+        let mut election_client = self._client_mut()?.election_client();
+        let op = election_client.campaign(
+            election_name.clone(),
+            self.config.node_name.as_ref() as &str,
+            lease_id.0,
+        );
+        let mut dur = Duration::from_secs(10);
+
+        let waiter = async {
+            loop {
+                tokio::time::sleep(dur).await;
+                info!(election_name, "Waiting on leadership.");
+                dur = min(dur * 2, Duration::from_secs(300));
+            }
+        };
+        let resp = select! {
+            resp = op => {resp?}
+            _ = self._cancel_token()?.cancelled() => {return Err(PetriError::Cancelled())}
+            _ = waiter => {panic!("waiter should never finish.")}
+        };
+        if let Some(leader_key) = resp.leader() {
+            let election_name =
+                std::str::from_utf8(leader_key.name()).unwrap_or("<leader name decoding failed>");
+            info!(election_name, "Became elected leader.",);
+        } else {
+            return Err(PetriError::ETCDError(etcd_client::Error::ElectError(
+                "Leader election failed".to_string(),
+            )));
+        }
+        // send errors are irrelevant here. In this case everything is shutting down anyway.
+        let _ = tx_leader.send(true);
+        Ok(())
+    }
+
+    fn create_transition_client(
+        &mut self,
+        transition_id: TransitionId,
+    ) -> Result<ETCDTransitionClient> {
+        Ok(ETCDTransitionClient {
+            client: self._client_mut()?.kv_client(),
+            transition_id,
+            prefix: self.config.prefix.clone(),
+            lease: self._lease()?,
+        })
+    }
+    #[tracing::instrument(level = "info", skip(builder), fields(transition_count = builder.transitions().len(), place_count = builder.transitions().len()) )]
+    async fn assign_ids(&mut self, builder: &PetriNetBuilder) -> Result<PetriNetIds> {
+        let cancel_token = self._cancel_token()?.clone();
+        let op = async {
+            let mut result = PetriNetIds::default();
+            for tr_name in builder.transitions().keys() {
+                let key = self.config.prefix.clone() + "transition_ids/" + tr_name;
+                let tr_id = self._get_or_assign_id(key, "tr").await?;
+                result.transitions.insert(tr_name.clone(), TransitionId(tr_id as u64));
+                let key = self.config.prefix.clone() + "transition_ids/" + tr_name + "/region";
+                self._check_or_assign_region(key).await?;
+            }
+            for pl_name in builder.places().keys() {
+                let key = self.config.prefix.clone() + "place_ids/" + pl_name;
+                let pl_id = self._get_or_assign_id(key, "pl").await?;
+                result.places.insert(pl_name.clone(), PlaceId(pl_id as u64));
+            }
+            Ok::<PetriNetIds, PetriError>(result)
+        };
+        let result = select! {
+            res = op => {res?},
+            _ = cancel_token.cancelled() => {return Err(PetriError::Cancelled())}
+        };
+
+        Ok(result)
+    }
+
+    #[tracing::instrument(level = "info", skip(tx_events, place_ids, _transition_ids))]
+    async fn load_data(
+        &mut self,
+        tx_events: tokio::sync::mpsc::Sender<NetChangeEvent>,
+        place_ids: HashSet<PlaceId>,
+        _transition_ids: HashSet<TransitionId>,
+    ) -> Result<()> {
+        let revision = self._create_initial_events(&tx_events, &place_ids).await?;
+        let prefix = self.config.prefix.clone();
+        let watch_client = self._client_mut()?.watch_client();
+        let cancel_token = self._cancel_token()?.clone();
+        let lease = self._lease()?;
+        let (tx_locks, rx_locks) = tokio::sync::mpsc::channel(128);
+        let mut place_locks = HashMap::<PlaceId, Arc<ETCDPlaceLock>>::new();
+        for &pl_id in &place_ids {
+            place_locks.insert(pl_id, self.place_lock_client(pl_id)?);
+        }
+        self.lock_requests_handle = Some(tokio::spawn(async move {
+            let fut = ETCDStorageClient::_lock_requests(place_locks, rx_locks);
+            select! {
+                res = fut =>{ match res {
+                    Err(PetriError::Cancelled()) => {}
+                    Err(err) => {error!("Handling lock requests failed with: {}.", err); cancel_token.cancel();}
+                    _ => {}
+                }}
+                _ = cancel_token.cancelled() => {}
+            }
+        }));
+        let cancel_token = self._cancel_token()?.clone();
+        self.watching_join_handle = Some(tokio::spawn(async move {
+            let watcher_fut = ETCDStorageClient::_watch_events(
+                prefix,
+                revision,
+                watch_client,
+                tx_events,
+                tx_locks,
+                place_ids,
+                cancel_token.clone(),
+                lease,
+            );
+            tokio::pin!(watcher_fut);
+            select! {
+                res = watcher_fut =>{ match res {
+                    Err(PetriError::Cancelled()) => {}
+                    Err(err) => {error!("Watching etcd for changes failed with: {}.", err); cancel_token.cancel();}
+                    _ => {}
+                }}
+                _ = cancel_token.cancelled() => {}
+            }
+        }));
+        Ok(())
+    }
+
+    fn place_lock_client(&mut self, pl_id: PlaceId) -> Result<Arc<ETCDPlaceLock>> {
+        let lease = self._lease()?;
+        let prefix = &self.config.prefix;
+        // Note: this seems inefficient (depending on clone cost)
+        // Will hopefully not be called too often
+        let client = self._client()?.clone();
+        let place_lock = self.place_locks.entry(pl_id).or_insert_with(|| {
+            Arc::new(ETCDPlaceLock::new(client.lock_client(), prefix.clone(), pl_id, lease))
+        });
+        Ok(place_lock.clone())
+    }
 }
 
-impl Debug for ETCDGate {
+impl Debug for ETCDStorageClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ETCDGate").field("lease", &self.lease.unwrap_or(LeaseId(-1)).0).finish()
+        f.debug_struct("ETCDStorageClient")
+            .field("lease", &self.lease.unwrap_or(LeaseId(-1)).0)
+            .finish()
     }
 }

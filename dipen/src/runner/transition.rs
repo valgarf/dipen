@@ -11,16 +11,17 @@ use tracing::{error, info, trace};
 use super::context::*;
 use super::dispatch::TransitionExecutorDispatch;
 use crate::error::{PetriError, Result};
-use crate::etcd::ETCDTransitionGate;
-use crate::etcd::{ETCDPlaceLock, ETCDPlaceLockData};
 use crate::exec::{CheckStartChoice, RunResult, RunResultData};
 use crate::net::{self, PlaceId, Revision, TokenId};
-use crate::state::{FencingToken, PlaceLock, PlaceLockData};
+use crate::storage::etcd::ETCDTransitionClient;
+use crate::storage::etcd::{ETCDPlaceLock, ETCDPlaceLockData};
+use crate::storage::traits::{PlaceLockClient as _, PlaceLockData as _};
+use crate::storage::{self, traits::TransitionClient as _, FencingToken};
 
 pub(crate) struct TransitionRunner {
     pub cancel_token: CancellationToken, // for shutting the transition runner down
     pub transition_id: net::TransitionId, // this runner's transition id
-    pub etcd_gate: ETCDTransitionGate,   // for communicating with etcd
+    pub transition_client: ETCDTransitionClient, // for communicating with etcd
     pub net_lock: Arc<RwLock<net::PetriNet>>, // get access to the local state of the net
     pub exec: Box<dyn TransitionExecutorDispatch>, // dispatcher to access this transition's implementation
     pub rx_place: HashMap<net::PlaceId, tokio::sync::watch::Receiver<Revision>>, // watch changes on each place
@@ -252,7 +253,7 @@ impl TransitionRunner {
         rx_revision: Option<&mut tokio::sync::watch::Receiver<Revision>>,
     ) -> Result<Vec<MutexGuard<'a, PL::PlaceLockData>>>
     where
-        PL: PlaceLock,
+        PL: storage::traits::PlaceLockClient,
     {
         locks.sort_by_key(|pl_lock| pl_lock.place_id());
         let mut guards: Vec<MutexGuard<PL::PlaceLockData>> = Vec::with_capacity(locks.len());
@@ -289,7 +290,7 @@ impl TransitionRunner {
         take: &[(PlaceId, TokenId)],
         fencing_tokens: Vec<&FencingToken>,
     ) -> Result<Revision> {
-        self.etcd_gate.start_transition(take.iter().copied(), &fencing_tokens).await
+        self.transition_client.start_transition(take.iter().copied(), &fencing_tokens).await
     }
 
     async fn _run_context(&mut self, take: &[(PlaceId, TokenId)]) -> Result<run::RunContextStruct> {
@@ -343,8 +344,10 @@ impl TransitionRunner {
             taken.iter().filter(|(_, to_id)| !placed_to_ids.contains(to_id)).copied().collect();
         // Should we check that the token's 'last_place' is a valid incoming arc?
         // Could only be a problem if the locking is somehow broken / manual modification
-        let revision =
-            self.etcd_gate.end_transition(res.place, res.create, destroy, &fencing_tokens).await?;
+        let revision = self
+            .transition_client
+            .end_transition(res.place, res.create, destroy, &fencing_tokens)
+            .await?;
         Ok(revision)
     }
 }

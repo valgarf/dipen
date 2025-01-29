@@ -8,7 +8,8 @@ use tracing::{debug, trace, warn};
 
 use crate::error::{PetriError, Result};
 use crate::net::{ArcVariant, NetChangeEvent, PetriNet, PetriNetBuilder, PlaceId, Revision, TransitionId};
-use crate::etcd::ETCDGate;
+use crate::storage::etcd::ETCDStorageClient;
+use crate::storage::traits::StorageClient as _;
 use super::ExecutorRegistry;
 use super::transition::TransitionRunner;
 
@@ -18,7 +19,7 @@ type ReceiverMap = HashMap<PlaceId, tokio::sync::watch::Receiver<Revision>>;
 #[tracing::instrument(level = "info", skip_all, fields(region=etcd.config.region, node=etcd.config.node_name))]
 pub async fn run(
     net_builder: Arc<PetriNetBuilder>,
-    mut etcd: ETCDGate,
+    mut etcd: ETCDStorageClient,
     executors: ExecutorRegistry,
     cancel_token: CancellationToken,
 ) -> Result<()> {
@@ -68,7 +69,7 @@ pub async fn run(
             let mut place_locks = HashMap::new();
             let mut receivers = HashMap::new();
             for (pl_id, arc) in net_read_guard.arcs_for(transition_id) {
-                place_locks.insert(pl_id, etcd.place_lock(pl_id)?);
+                place_locks.insert(pl_id, etcd.place_lock_client(pl_id)?);
                 if arc.variant() != ArcVariant::Out {
                     receivers.insert(pl_id, pl_rx[&pl_id].clone());
                 }                
@@ -78,7 +79,7 @@ pub async fn run(
             let mut runner = TransitionRunner {
                 cancel_token: cancel_token.clone(), 
                 net_lock:Arc::clone(&net_lock), 
-                etcd_gate: etcd.create_transition_gate(transition_id)?, 
+                transition_client: etcd.create_transition_client(transition_id)?, 
                 transition_id,
                 rx_place: receivers,
                 rx_revision: rx_revision.clone(), 

@@ -2,14 +2,14 @@ use std::sync::Arc;
 use std::thread;
 
 use crate::error::*;
-use crate::etcd::PyETCDGateConfig;
+use crate::etcd::PyETCDConfig;
 use crate::exec::{ASYNCIO, RUNNING_LOOP};
 use crate::net::PyPetriNetBuilder;
 use crate::registry::PyExecutorRegistry;
 use dipen::error::{PetriError, Result as PetriResult};
-use dipen::etcd::ETCDGate;
 use dipen::net::PetriNetBuilder;
 use dipen::runner::ExecutorRegistry;
+use dipen::storage::etcd::ETCDStorageClient;
 use pyo3::prelude::*;
 use pyo3_async_runtimes::get_running_loop;
 use tokio::runtime::Runtime;
@@ -20,7 +20,7 @@ use tracing::{error, info};
 #[tracing::instrument(level = "info", skip_all)]
 pub async fn run_async(
     net: Arc<PetriNetBuilder>,
-    etcd: ETCDGate,
+    etcd: ETCDStorageClient,
     executors: ExecutorRegistry,
     cancel_token: CancellationToken,
 ) -> PetriResult<()> {
@@ -40,7 +40,7 @@ pub async fn run_async(
 pub fn start(
     py: Python<'_>,
     net: &PyPetriNetBuilder,
-    etcd_config: &PyETCDGateConfig,
+    etcd_config: &PyETCDConfig,
     executors: &PyExecutorRegistry,
 ) -> PyResult<RunHandle> {
     let l = get_running_loop(py)?;
@@ -60,7 +60,7 @@ pub fn start(
             let res: PyPetriResult<()> = rt
                 .block_on(run_async(
                     cloned_net,
-                    ETCDGate::new(etcd),
+                    ETCDStorageClient::new(etcd),
                     executors,
                     cancel_token_cloned,
                 ))

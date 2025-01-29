@@ -17,7 +17,7 @@ use contexts::{
     },
 };
 use error::*;
-use etcd::PyETCDGateConfig;
+use etcd::PyETCDConfig;
 use logging::RustTracingToLoguru;
 use net::{PyArcVariant, PyPetriNetBuilder};
 use pyo3::prelude::*;
@@ -30,7 +30,7 @@ fn _dipen_py_internal(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RustTracingToLoguru>()?;
     m.add_class::<PyPetriNetBuilder>()?;
     m.add_class::<PyArcVariant>()?;
-    m.add_class::<PyETCDGateConfig>()?;
+    m.add_class::<PyETCDConfig>()?;
     m.add_class::<PyCreateContext>()?;
     m.add_class::<PyCreateArcContext>()?;
     m.add_class::<PyCreatePlaceContext>()?;

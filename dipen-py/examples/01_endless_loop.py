@@ -64,7 +64,11 @@ class TrDelayedMove:
         return result.enabled()
 
     async def run(self, ctx: dipen.RunContext):
-        await asyncio.sleep(1)
+        try:
+            await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            logger.debug("transition is being cancelled")
+            raise
         result = dipen.RunResult.build()
         for to in ctx.tokens:
             result.place(to, self.pl_out)
@@ -76,7 +80,6 @@ class TrDelayedMove:
 
 async def cancel_after_delay(handle):
     await asyncio.sleep(5)
-    print("Cancelling")
     handle.cancel()
 
 

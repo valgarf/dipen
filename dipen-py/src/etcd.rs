@@ -1,15 +1,15 @@
 use std::time::Duration;
 
-use dipen::etcd::ETCDConfig;
+use dipen::storage::etcd::ETCDConfig;
 use pyo3::prelude::*;
 
 #[pyclass(name = "ETCDConfig")]
-pub struct PyETCDGateConfig {
+pub struct PyETCDConfig {
     pub config: ETCDConfig,
 }
 
 #[pymethods]
-impl PyETCDGateConfig {
+impl PyETCDConfig {
     #[new]
     #[pyo3(signature = (endpoints, prefix="", node_name="default_node", region="default", lease_id=None, lease_ttl=Duration::from_secs(10), username=None, password=None))]
     #[allow(clippy::too_many_arguments)]

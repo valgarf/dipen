@@ -2,10 +2,10 @@ use std::sync::Arc;
 
 use dipen::{
     error::Result as PetriResult,
-    etcd::{ETCDConfigBuilder, ETCDGate},
     net,
     net::{ArcVariant, PetriNetBuilder, Place, Transition},
     runner::ExecutorRegistry,
+    storage::etcd::{ETCDConfigBuilder, ETCDStorageClient},
 };
 use tokio::signal;
 use tokio_util::sync::CancellationToken;
@@ -59,7 +59,7 @@ async fn run() -> PetriResult<()> {
         .region("region-1")
         .build()?;
 
-    let etcd = ETCDGate::new(config);
+    let etcd = ETCDStorageClient::new(config);
     let run = dipen::runner::run(Arc::clone(&net), etcd, executors, shutdown_token.clone());
     match run.await {
         Ok(_) => {}

@@ -1,6 +1,6 @@
 use std::{io, num::ParseIntError, str::Utf8Error};
 
-use crate::etcd::ETCDConfigBuilderError;
+use crate::storage::etcd::ETCDConfigBuilderError;
 
 #[derive(thiserror::Error, Debug)]
 pub enum PetriError {
