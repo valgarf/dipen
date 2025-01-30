@@ -73,6 +73,20 @@ impl ETCDConfigBuilder {
     }
 }
 
+impl storage::traits::StorageClientConfig for ETCDConfig {
+    fn prefix(&self) -> &str {
+        &self.prefix
+    }
+
+    fn node_name(&self) -> &str {
+        &self.node_name
+    }
+
+    fn region(&self) -> &str {
+        &self.region
+    }
+}
+
 struct ETCDEvent<'a> {
     event_type: EventType,
     key: &'a [u8],
@@ -707,6 +721,12 @@ impl ETCDStorageClient {
 impl storage::traits::StorageClient for ETCDStorageClient {
     type TransitionClient = ETCDTransitionClient;
     type PlaceLockClient = ETCDPlaceLock;
+    type Config = ETCDConfig;
+
+    fn config(&self) -> &Self::Config {
+        &self.config
+    }
+
     #[tracing::instrument(level = "info", skip(cancel_token, self))]
     async fn connect(&mut self, cancel_token: Option<CancellationToken>) -> Result<()> {
         let cancel_token = cancel_token.unwrap_or_default();

@@ -12,7 +12,7 @@ pub trait PlaceLockData {
 }
 
 pub trait PlaceLockClient {
-    type PlaceLockData: PlaceLockData;
+    type PlaceLockData: PlaceLockData + Send + Sync;
     fn place_id(&self) -> PlaceId;
     fn acquire(
         &self,

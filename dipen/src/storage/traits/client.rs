@@ -8,9 +8,17 @@ use tokio_util::sync::CancellationToken;
 
 use super::{PlaceLockClient, TransitionClient};
 
+pub trait StorageClientConfig {
+    fn prefix(&self) -> &str;
+    fn node_name(&self) -> &str;
+    fn region(&self) -> &str;
+}
+
 pub trait StorageClient {
-    type TransitionClient: TransitionClient;
-    type PlaceLockClient: PlaceLockClient;
+    type TransitionClient: TransitionClient + Send + Sync;
+    type PlaceLockClient: PlaceLockClient + Send + Sync;
+    type Config: StorageClientConfig + Send + Sync;
+    fn config(&self) -> &Self::Config;
     fn connect(
         &mut self,
         cancel_token: Option<CancellationToken>,

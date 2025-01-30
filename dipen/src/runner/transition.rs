@@ -13,22 +13,20 @@ use super::dispatch::TransitionExecutorDispatch;
 use crate::error::{PetriError, Result};
 use crate::exec::{CheckStartChoice, RunResult, RunResultData};
 use crate::net::{self, PlaceId, Revision, TokenId};
-use crate::storage::etcd::ETCDTransitionClient;
-use crate::storage::etcd::{ETCDPlaceLock, ETCDPlaceLockData};
-use crate::storage::traits::{PlaceLockClient as _, PlaceLockData as _};
+use crate::storage::traits::{PlaceLockClient as _, PlaceLockData as _, StorageClient};
 use crate::storage::{self, traits::TransitionClient as _, FencingToken};
 
-pub(crate) struct TransitionRunner {
+pub(crate) struct TransitionRunner<S: storage::traits::StorageClient> {
     pub cancel_token: CancellationToken, // for shutting the transition runner down
     pub transition_id: net::TransitionId, // this runner's transition id
-    pub transition_client: ETCDTransitionClient, // for communicating with etcd
+    pub transition_client: S::TransitionClient, // for communicating with etcd
     pub net_lock: Arc<RwLock<net::PetriNet>>, // get access to the local state of the net
     pub exec: Box<dyn TransitionExecutorDispatch>, // dispatcher to access this transition's implementation
     pub rx_place: HashMap<net::PlaceId, tokio::sync::watch::Receiver<Revision>>, // watch changes on each place
     pub rx_revision: tokio::sync::watch::Receiver<Revision>, // watch current revision
     pub rx_leader: tokio::sync::watch::Receiver<bool>, // true if leader election was successful
-    pub place_locks: HashMap<net::PlaceId, Arc<ETCDPlaceLock>>, // for acquiring globally unique locks to relevant places
-    pub run_data: RunData,                                      // internal state
+    pub place_locks: HashMap<net::PlaceId, Arc<S::PlaceLockClient>>, // for acquiring globally unique locks to relevant places
+    pub run_data: RunData,                                           // internal state
     // used for logging and other messages
     pub region_name: String,
     pub node_name: String,
@@ -41,12 +39,12 @@ pub(crate) struct RunData {
     auto_recheck: Duration,
 }
 
-// ## run context
-
-// ## dispatch
+#[allow(non_camel_case_types)]
+type PlaceLockData_t<S> =
+    <<S as StorageClient>::PlaceLockClient as storage::traits::PlaceLockClient>::PlaceLockData;
 
 // runner implementation
-impl TransitionRunner {
+impl<S: StorageClient> TransitionRunner<S> {
     #[tracing::instrument(level = "debug", skip(self), fields(transition=format!("{} ({})", self.transition_name, self.transition_id.0), region=self.region_name, node=self.node_name))]
     pub async fn run_transition(mut self) {
         let cancel_token = self.cancel_token.clone();
@@ -64,7 +62,7 @@ impl TransitionRunner {
 
     async fn _run_transition(&mut self) -> Result<()> {
         // loading event should have been handled before checking for transitions to cancel
-        TransitionRunner::_wait_for_revision(&mut self.rx_revision, Revision(1)).await?;
+        TransitionRunner::<S>::_wait_for_revision(&mut self.rx_revision, Revision(1)).await?;
         // we should be leader to start running (receiving error means the whole runner is shutting down)
         self.rx_leader
             .wait_for(|&is_leader| is_leader)
@@ -86,7 +84,7 @@ impl TransitionRunner {
             // we could run in the current state, lock all relevant places
             let mut start_locks = self._cond_place_locks();
             let guards =
-                TransitionRunner::_lock(&mut start_locks, Some(&mut self.rx_revision)).await?;
+                TransitionRunner::<S>::_lock(&mut start_locks, Some(&mut self.rx_revision)).await?;
             // after locking, we check again
             let take = match self._check_start().await? {
                 None => {
@@ -96,13 +94,13 @@ impl TransitionRunner {
                 // we can run, _check_start returned the tokens the transition wants to take
                 Some(take) => take,
             };
-            let fencing_tokens = TransitionRunner::_get_fencing_tokens(&guards);
+            let fencing_tokens = TransitionRunner::<S>::_get_fencing_tokens(&guards);
             trace!("Starting transition.");
             // update state of taken tokens on etcd
             let revision = self._start_transition(&take, fencing_tokens).await?;
             // get the run context, afterwards we don't need to hold the locks any longer
             let mut ctx = self._run_context(&take).await?;
-            TransitionRunner::_release_locks(guards, revision);
+            TransitionRunner::<S>::_release_locks(guards, revision);
             drop(start_locks);
 
             // actually run the transition
@@ -111,14 +109,14 @@ impl TransitionRunner {
             // we are done, we need to update the state of the target places, i.e.
             // locking output places and sending an update to etcd
             let mut finish_locks = self._target_place_locks(&res).await;
-            let guards = TransitionRunner::_lock(&mut finish_locks, None).await?;
-            let fencing_tokens = TransitionRunner::_get_fencing_tokens(&guards);
+            let guards = TransitionRunner::<S>::_lock(&mut finish_locks, None).await?;
+            let fencing_tokens = TransitionRunner::<S>::_get_fencing_tokens(&guards);
             let new_revision = self._finish_transition(res, &take, fencing_tokens).await?;
-            TransitionRunner::_release_locks(guards, new_revision);
+            TransitionRunner::<S>::_release_locks(guards, new_revision);
 
             trace!("Finished transition.");
             // we wait for the local net to update to the latest revision we created
-            TransitionRunner::_wait_for_revision(&mut self.rx_revision, new_revision).await?;
+            TransitionRunner::<S>::_wait_for_revision(&mut self.rx_revision, new_revision).await?;
         }
     }
 
@@ -174,11 +172,11 @@ impl TransitionRunner {
             };
             drop(net);
             let mut finish_locks = self._target_place_locks(&res).await;
-            let guards = TransitionRunner::_lock(&mut finish_locks, None).await?;
-            let fencing_tokens = TransitionRunner::_get_fencing_tokens(&guards);
+            let guards = TransitionRunner::<S>::_lock(&mut finish_locks, None).await?;
+            let fencing_tokens = TransitionRunner::<S>::_get_fencing_tokens(&guards);
             let taken = vec![];
             let rev = self._finish_transition(res, &taken, fencing_tokens).await?;
-            TransitionRunner::_wait_for_revision(&mut self.rx_revision, rev).await?;
+            TransitionRunner::<S>::_wait_for_revision(&mut self.rx_revision, rev).await?;
         }
         Ok(())
     }
@@ -239,7 +237,7 @@ impl TransitionRunner {
         self.rx_place.keys().copied().collect()
     }
 
-    fn _cond_place_locks(&self) -> Vec<Arc<ETCDPlaceLock>> {
+    fn _cond_place_locks(&self) -> Vec<Arc<S::PlaceLockClient>> {
         self._cond_place_ids()
             .iter()
             .map(|pl_id| {
@@ -268,18 +266,18 @@ impl TransitionRunner {
         // etcd.
         let min_revision = guards.iter().map(|g| g.min_revision()).max().unwrap_or(Revision(0));
         if let Some(rx_revision) = rx_revision {
-            TransitionRunner::_wait_for_revision(rx_revision, min_revision).await?;
+            TransitionRunner::<S>::_wait_for_revision(rx_revision, min_revision).await?;
         }
         Ok(guards)
     }
 
     fn _get_fencing_tokens<'a>(
-        guards: &'a Vec<MutexGuard<ETCDPlaceLockData>>,
+        guards: &'a Vec<MutexGuard<PlaceLockData_t<S>>>,
     ) -> Vec<&'a FencingToken> {
         guards.iter().map(|g| g.fencing_token()).collect()
     }
 
-    fn _release_locks(mut guards: Vec<MutexGuard<ETCDPlaceLockData>>, revision: Revision) {
+    fn _release_locks(mut guards: Vec<MutexGuard<PlaceLockData_t<S>>>, revision: Revision) {
         for g in &mut guards {
             g.set_min_revision(revision);
         }
@@ -311,7 +309,7 @@ impl TransitionRunner {
         Ok(self.exec.run(ctx).await)
     }
 
-    async fn _target_place_locks(&self, res: &RunResultData) -> Vec<Arc<ETCDPlaceLock>> {
+    async fn _target_place_locks(&self, res: &RunResultData) -> Vec<Arc<S::PlaceLockClient>> {
         // TODO: is it necessary to lock the places we took tokens from?
         // We will be moving / destroying those tokens and the transitions start method's may use
         // their existence to decide wether to start or not.

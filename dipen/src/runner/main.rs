@@ -8,42 +8,41 @@ use tracing::{debug, trace, warn};
 
 use crate::error::{PetriError, Result};
 use crate::net::{ArcVariant, NetChangeEvent, PetriNet, PetriNetBuilder, PlaceId, Revision, TransitionId};
-use crate::storage::etcd::ETCDStorageClient;
-use crate::storage::traits::StorageClient as _;
+use crate::storage::traits::{StorageClient, StorageClientConfig as _};
 use super::ExecutorRegistry;
 use super::transition::TransitionRunner;
 
 type SenderMap = HashMap<PlaceId,  tokio::sync::watch::Sender<Revision>>;
 type ReceiverMap = HashMap<PlaceId, tokio::sync::watch::Receiver<Revision>>;
 
-#[tracing::instrument(level = "info", skip_all, fields(region=etcd.config.region, node=etcd.config.node_name))]
-pub async fn run(
+#[tracing::instrument(level = "info", skip_all, fields(region=storage_client.config().region(), node=storage_client.config().node_name()))]
+pub async fn run<S: StorageClient + 'static>(
     net_builder: Arc<PetriNetBuilder>,
-    mut etcd: ETCDStorageClient,
+    mut storage_client: S,
     executors: ExecutorRegistry,
     cancel_token: CancellationToken,
 ) -> Result<()> {
-    if etcd.config.region.is_empty() {
+    if storage_client.config().region().is_empty() {
         return Err(PetriError::ConfigError(
             "Method 'run' requires a region to be set.".to_string(),
         ));
     }
-    let region_name = etcd.config.region.clone();
-    let node_name = etcd.config.node_name.clone();
+    let region_name = storage_client.config().region().to_string();
+    let node_name = storage_client.config().node_name().to_string();
     // validate assignement (all transitions have an executor assigned and its validate function
     // succeeds): We don't want to connect to etcd if we have an inconsistent net to begin with.
-    let net_builder = net_builder.only_region(&etcd.config.region)?;
+    let net_builder = net_builder.only_region(storage_client.config().region())?;
 
     let cancel_token_clone = cancel_token.clone();
     let result = async {
         // connect, obtain leadership for our region, create a net using the ids stored on etcd
-        etcd.connect(Some(cancel_token_clone)).await?;
-        let net_ids = etcd.assign_ids(&net_builder).await?;
+        storage_client.connect(Some(cancel_token_clone)).await?;
+        let net_ids = storage_client.assign_ids(&net_builder).await?;
         let net = net_builder.build(&net_ids)?;
 
         // get the current state and wrap it into events to be handled later.
         let (tx, mut rx) = tokio::sync::mpsc::channel::<NetChangeEvent>(128);
-        etcd.load_data(
+        storage_client.load_data(
             tx,
             net.places().map(|t|t.0).collect(),
             net.transitions().map(|t|t.0).collect(),
@@ -69,17 +68,17 @@ pub async fn run(
             let mut place_locks = HashMap::new();
             let mut receivers = HashMap::new();
             for (pl_id, arc) in net_read_guard.arcs_for(transition_id) {
-                place_locks.insert(pl_id, etcd.place_lock_client(pl_id)?);
+                place_locks.insert(pl_id, storage_client.place_lock_client(pl_id)?);
                 if arc.variant() != ArcVariant::Out {
                     receivers.insert(pl_id, pl_rx[&pl_id].clone());
                 }                
             }
             let tr_name = net_read_guard.transition(transition_id).unwrap().name();
             let exec = executors.dispatcher.get(tr_name).ok_or_else(|| PetriError::ConfigError(format!("Could not find an executor for transition {}", tr_name)))?;
-            let mut runner = TransitionRunner {
+            let mut runner = TransitionRunner::<S> {
                 cancel_token: cancel_token.clone(), 
                 net_lock:Arc::clone(&net_lock), 
-                transition_client: etcd.create_transition_client(transition_id)?, 
+                transition_client: storage_client.create_transition_client(transition_id)?, 
                 transition_id,
                 rx_place: receivers,
                 rx_revision: rx_revision.clone(), 
@@ -97,7 +96,7 @@ pub async fn run(
 
         drop(net_read_guard);
 
-        let election_fut = etcd.campaign_for_region(tx_leader);
+        let election_fut = storage_client.campaign_for_region(tx_leader);
         let mut election_completed = false;
         tokio::pin!(election_fut);
 
@@ -172,7 +171,7 @@ pub async fn run(
     .await;
 
     // finally:
-    etcd.disconnect().await;
+    storage_client.disconnect().await;
 
     match result {
         Err(PetriError::Cancelled()) => Ok(()),
