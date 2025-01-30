@@ -1,6 +1,6 @@
 use std::{io, num::ParseIntError, str::Utf8Error};
 
-use crate::storage::etcd::ETCDConfigBuilderError;
+use crate::storage::{etcd::ETCDConfigBuilderError, in_memory::InMemoryConfigBuilderError};
 
 #[derive(thiserror::Error, Debug)]
 pub enum PetriError {
@@ -10,6 +10,8 @@ pub enum PetriError {
     ETCDError(#[from] etcd_client::Error),
     #[error("Configuration error: {0}")]
     ETCDConfigError(#[from] ETCDConfigBuilderError),
+    #[error("Configuration error: {0}")]
+    InMemoryConfigError(#[from] InMemoryConfigBuilderError),
     #[error("Not connected")]
     NotConnected(),
     #[error("Conversion to/from utf8 failed: {0}")]
