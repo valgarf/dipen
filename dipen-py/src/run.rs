@@ -4,12 +4,14 @@ use std::thread;
 use crate::error::*;
 use crate::etcd::PyETCDConfig;
 use crate::exec::{ASYNCIO, RUNNING_LOOP};
+use crate::in_memory::PyInMemoryStorageClient;
 use crate::net::PyPetriNetBuilder;
 use crate::registry::PyExecutorRegistry;
 use dipen::error::{PetriError, Result as PetriResult};
 use dipen::net::PetriNetBuilder;
 use dipen::runner::ExecutorRegistry;
 use dipen::storage::etcd::ETCDStorageClient;
+use dipen::storage::traits::StorageClient;
 use pyo3::prelude::*;
 use pyo3_async_runtimes::get_running_loop;
 use tokio::runtime::Runtime;
@@ -18,13 +20,13 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
 #[tracing::instrument(level = "info", skip_all)]
-pub async fn run_async(
+pub async fn run_async<S: StorageClient + 'static>(
     net: Arc<PetriNetBuilder>,
-    etcd: ETCDStorageClient,
+    storage_client: S,
     executors: ExecutorRegistry,
     cancel_token: CancellationToken,
 ) -> PetriResult<()> {
-    let run = dipen::runner::run(Arc::clone(&net), etcd, executors, cancel_token);
+    let run = dipen::runner::run(Arc::clone(&net), storage_client, executors, cancel_token);
     match run.await {
         Ok(_) => {}
         Err(err) => {
@@ -36,11 +38,21 @@ pub async fn run_async(
     Ok(())
 }
 
+#[derive(FromPyObject)]
+#[allow(clippy::large_enum_variant)]
+pub enum StorageBackends {
+    #[pyo3(transparent, annotation = "ETCDConfig")]
+    Etcd(PyETCDConfig),
+    #[pyo3(transparent, annotation = "InMemoryStorageClient")]
+    InMemory(PyInMemoryStorageClient),
+    // put the other cases here
+}
+
 #[pyfunction]
 pub fn start(
     py: Python<'_>,
     net: &PyPetriNetBuilder,
-    etcd_config: &PyETCDConfig,
+    storage: StorageBackends,
     executors: &PyExecutorRegistry,
 ) -> PyResult<RunHandle> {
     let l = get_running_loop(py)?;
@@ -49,7 +61,6 @@ pub fn start(
     RUNNING_LOOP.get_or_init(|| l.unbind());
 
     let cloned_net = Arc::clone(&net.net);
-    let etcd = etcd_config.config.clone();
     let cancel_token = CancellationToken::new();
     let cancel_token_cloned = cancel_token.clone();
     let executors = executors.to_rust_registry();
@@ -57,14 +68,22 @@ pub fn start(
     py.allow_threads(|| {
         thread::spawn(|| {
             let rt = Runtime::new().expect("Failed to create tokio runtime");
-            let res: PyPetriResult<()> = rt
-                .block_on(run_async(
+            let start_res = match storage {
+                StorageBackends::Etcd(etcd) => rt.block_on(run_async(
                     cloned_net,
-                    ETCDStorageClient::new(etcd),
+                    ETCDStorageClient::new(etcd.config.clone()),
                     executors,
                     cancel_token_cloned,
-                ))
-                .map_err(|e| e.into());
+                )),
+                StorageBackends::InMemory(in_memory) => rt.block_on(run_async(
+                    cloned_net,
+                    in_memory.storage.clone(),
+                    executors,
+                    cancel_token_cloned,
+                )),
+            };
+
+            let res: PyPetriResult<()> = start_res.map_err(|e| e.into());
             let _ = tx.send(res); // we don't really care if anyone is waiting for the result.
         })
     });

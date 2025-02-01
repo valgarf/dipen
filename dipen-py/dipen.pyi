@@ -42,13 +42,16 @@ class ExecutorRegistry:
         """
 
 def start(
-    net: PetriNetBuilder, etcd_config: ETCDConfig, executors: ExecutorRegistry
+    net: PetriNetBuilder,
+    storage: ETCDConfig | InMemoryStorageClient,
+    executors: ExecutorRegistry,
 ) -> RunHandle:
     """
     Main entrypoint into the distributed petri net runner.
 
     :param net: the petri net to run. Will be filtered by the 'region' provided in 'etcd_config'
-    :param etcd_config: Configuration on how to connect to etcd
+    :param storage: Storage backend to use. Either configuration on how to connect to etcd or
+                           an in-memory storage.
     :param executors: The transition executors defined and registered for the region.
                       Every transition needs an executor.
     :return: a RunHandle that allows to cancel / join on the runner.
@@ -137,6 +140,34 @@ class ETCDConfig:
         :param lease_id: If provided, it must be a unique id for this client across the whole etcd
                          cluster, the prefix is irrelevant for leases. If not provided, a random one
                          is assigned.
+        """
+
+class InMemoryStorageClient:
+    def __init__(
+        self,
+        prefix: str = "",
+        node_name: str = "default_node",
+        region: str = "default",
+    ):
+        """
+        Configure an in-memory client
+        :param prefix: Currently unused except for log outputs
+        """
+
+    def clone_with_config(
+        self,
+        prefix: str = "",
+        node_name: str = "default_node",
+        region: str = "default",
+    ) -> InMemoryStorageClient:
+        """
+        Clone an in-memory client and provide a new config for the cloned instance.
+        This allows to synchronise multiple independent runners by connecting them with cloned
+        instances of the same InMemoryStorageClient.
+
+        Instances MUST be cloned before starting the first runner.
+
+        :param prefix: Currently unused except for log outputs
         """
 
 class CreateContext:

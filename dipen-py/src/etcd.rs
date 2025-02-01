@@ -4,6 +4,7 @@ use dipen::storage::etcd::ETCDConfig;
 use pyo3::prelude::*;
 
 #[pyclass(name = "ETCDConfig")]
+#[derive(Clone)]
 pub struct PyETCDConfig {
     pub config: ETCDConfig,
 }

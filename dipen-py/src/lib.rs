@@ -3,6 +3,7 @@ mod contexts;
 mod error;
 mod etcd;
 mod exec;
+mod in_memory;
 mod logging;
 mod net;
 mod registry;
@@ -18,6 +19,7 @@ use contexts::{
 };
 use error::*;
 use etcd::PyETCDConfig;
+use in_memory::PyInMemoryStorageClient;
 use logging::RustTracingToLoguru;
 use net::{PyArcVariant, PyPetriNetBuilder};
 use pyo3::prelude::*;
@@ -31,6 +33,7 @@ fn _dipen_py_internal(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPetriNetBuilder>()?;
     m.add_class::<PyArcVariant>()?;
     m.add_class::<PyETCDConfig>()?;
+    m.add_class::<PyInMemoryStorageClient>()?;
     m.add_class::<PyCreateContext>()?;
     m.add_class::<PyCreateArcContext>()?;
     m.add_class::<PyCreatePlaceContext>()?;
