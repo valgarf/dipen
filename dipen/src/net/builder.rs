@@ -16,7 +16,7 @@ pub struct PetriNetBuilder {
     arcs: HashMap<(String, String), Arc>, // key: (place name, transition name)
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct PetriNetIds {
     pub places: HashMap<String, PlaceId>,
     pub transitions: HashMap<String, TransitionId>,

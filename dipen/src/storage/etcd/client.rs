@@ -723,6 +723,10 @@ impl storage::traits::StorageClient for ETCDStorageClient {
     type PlaceLockClient = ETCDPlaceLock;
     type Config = ETCDConfig;
 
+    fn from_config(config: Self::Config) -> ETCDStorageClient {
+        ETCDStorageClient::new(config)
+    }
+
     fn config(&self) -> &Self::Config {
         &self.config
     }
@@ -823,7 +827,7 @@ impl storage::traits::StorageClient for ETCDStorageClient {
         Ok(())
     }
 
-    fn create_transition_client(
+    async fn create_transition_client(
         &mut self,
         transition_id: TransitionId,
     ) -> Result<ETCDTransitionClient> {
@@ -876,7 +880,7 @@ impl storage::traits::StorageClient for ETCDStorageClient {
         let (tx_locks, rx_locks) = tokio::sync::mpsc::channel(128);
         let mut place_locks = HashMap::<PlaceId, Arc<ETCDPlaceLock>>::new();
         for &pl_id in &place_ids {
-            place_locks.insert(pl_id, self.place_lock_client(pl_id)?);
+            place_locks.insert(pl_id, self.place_lock_client(pl_id).await?);
         }
         self.lock_requests_handle = Some(tokio::spawn(async move {
             let fut = ETCDStorageClient::_lock_requests(place_locks, rx_locks);
@@ -914,7 +918,7 @@ impl storage::traits::StorageClient for ETCDStorageClient {
         Ok(())
     }
 
-    fn place_lock_client(&mut self, pl_id: PlaceId) -> Result<Arc<ETCDPlaceLock>> {
+    async fn place_lock_client(&mut self, pl_id: PlaceId) -> Result<Arc<ETCDPlaceLock>> {
         let lease = self._lease()?;
         let prefix = &self.config.prefix;
         // Note: this seems inefficient (depending on clone cost)

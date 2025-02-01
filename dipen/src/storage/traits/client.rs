@@ -18,6 +18,7 @@ pub trait StorageClient {
     type TransitionClient: TransitionClient + Send + Sync;
     type PlaceLockClient: PlaceLockClient + Send + Sync;
     type Config: StorageClientConfig + Send + Sync;
+    fn from_config(config: Self::Config) -> Self;
     fn config(&self) -> &Self::Config;
     fn connect(
         &mut self,
@@ -31,7 +32,7 @@ pub trait StorageClient {
     fn create_transition_client(
         &mut self,
         transition_id: TransitionId,
-    ) -> Result<Self::TransitionClient>;
+    ) -> impl std::future::Future<Output = Result<Self::TransitionClient>> + Send;
     fn assign_ids(
         &mut self,
         builder: &PetriNetBuilder,
@@ -42,5 +43,8 @@ pub trait StorageClient {
         place_ids: HashSet<PlaceId>,
         _transition_ids: HashSet<TransitionId>,
     ) -> impl std::future::Future<Output = Result<()>> + Send;
-    fn place_lock_client(&mut self, pl_id: PlaceId) -> Result<Arc<Self::PlaceLockClient>>;
+    fn place_lock_client(
+        &mut self,
+        pl_id: PlaceId,
+    ) -> impl std::future::Future<Output = Result<Arc<Self::PlaceLockClient>>> + Send;
 }

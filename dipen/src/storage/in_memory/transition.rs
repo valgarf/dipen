@@ -13,7 +13,7 @@ use crate::storage::FencingToken;
 
 pub struct InMemoryTransitionClient {
     pub(super) transition_id: TransitionId,
-    pub(super) tx_events: tokio::sync::mpsc::Sender<NetChangeEvent>,
+    pub(super) tx_event_broadcast: tokio::sync::broadcast::Sender<NetChangeEvent>,
     pub(super) revision: Arc<AtomicU64>,
     pub(super) token_ids: Arc<AtomicU64>,
 }
@@ -29,7 +29,7 @@ impl storage::traits::TransitionClient for InMemoryTransitionClient {
             changes.push(NetChange::Take(pl_id, self.transition_id, to_id));
         }
         let revision = Revision(self.revision.fetch_add(1, Ordering::SeqCst));
-        let _ = self.tx_events.send(NetChangeEvent { changes, revision }).await;
+        let _ = self.tx_event_broadcast.send(NetChangeEvent { changes, revision });
         Ok(revision)
     }
 
@@ -55,7 +55,7 @@ impl storage::traits::TransitionClient for InMemoryTransitionClient {
         }
 
         let revision = Revision(self.revision.fetch_add(1, Ordering::SeqCst));
-        let _ = self.tx_events.send(NetChangeEvent { changes, revision }).await;
+        let _ = self.tx_event_broadcast.send(NetChangeEvent { changes, revision });
         Ok(revision)
     }
 }

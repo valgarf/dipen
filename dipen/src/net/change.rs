@@ -4,7 +4,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use super::{common::Revision, PlaceId, TokenId, TransitionId};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum NetChange {
     // changes during normal run (with transition that is responsible)
     Take(PlaceId, TransitionId, TokenId),
@@ -18,7 +18,7 @@ pub enum NetChange {
     ExternalUpdate(TokenId, Vec<u8>),
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct NetChangeEvent {
     pub changes: Vec<NetChange>,
     pub revision: Revision,

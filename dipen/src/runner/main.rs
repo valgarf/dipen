@@ -68,7 +68,7 @@ pub async fn run<S: StorageClient + 'static>(
             let mut place_locks = HashMap::new();
             let mut receivers = HashMap::new();
             for (pl_id, arc) in net_read_guard.arcs_for(transition_id) {
-                place_locks.insert(pl_id, storage_client.place_lock_client(pl_id)?);
+                place_locks.insert(pl_id, storage_client.place_lock_client(pl_id).await?);
                 if arc.variant() != ArcVariant::Out {
                     receivers.insert(pl_id, pl_rx[&pl_id].clone());
                 }                
@@ -78,7 +78,7 @@ pub async fn run<S: StorageClient + 'static>(
             let mut runner = TransitionRunner::<S> {
                 cancel_token: cancel_token.clone(), 
                 net_lock:Arc::clone(&net_lock), 
-                transition_client: storage_client.create_transition_client(transition_id)?, 
+                transition_client: storage_client.create_transition_client(transition_id).await?, 
                 transition_id,
                 rx_place: receivers,
                 rx_revision: rx_revision.clone(), 

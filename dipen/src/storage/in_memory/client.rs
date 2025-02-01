@@ -9,7 +9,7 @@ use std::{
 
 use derive_builder::Builder;
 use etcd_client::{KvClient, PutOptions};
-use tokio::select;
+use tokio::{join, select, sync::RwLock, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -21,17 +21,25 @@ use crate::{
     },
     storage::{self},
 };
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 use super::InMemoryTransitionClient;
 
-pub struct InMemoryStorageClient {
-    pub(crate) config: InMemoryConfig,
-    cancel_token: Option<CancellationToken>,
+pub struct StorageClientData {
     place_locks: HashMap<PlaceId, Arc<InMemoryPlaceLock>>,
     revision: Arc<AtomicU64>,
     token_ids: Arc<AtomicU64>,
-    tx_events: Option<tokio::sync::mpsc::Sender<NetChangeEvent>>,
+    tx_event_broadcast: tokio::sync::broadcast::Sender<NetChangeEvent>,
+    net_ids: PetriNetIds,
+    next_tr_id: AtomicU64,
+    next_pl_id: AtomicU64,
+}
+pub struct InMemoryStorageClient {
+    pub(crate) config: InMemoryConfig,
+    cancel_token: Option<CancellationToken>,
+    shared_data: Arc<RwLock<StorageClientData>>,
+    watching_join_handle: Option<JoinHandle<()>>,
+    rx_event_broadcast: tokio::sync::broadcast::Receiver<NetChangeEvent>,
 }
 
 #[derive(Builder, Clone)]
@@ -88,24 +96,58 @@ impl storage::traits::StorageClientConfig for InMemoryConfig {
     }
 }
 
+impl Clone for InMemoryStorageClient {
+    /// Warning: Clones in memory client will only receive events AFTER cloning.
+    /// Always create all clones before starting to run a net
+    fn clone(&self) -> Self {
+        // TODO: contraint could be enforced dynamically or - with a modified design - statically
+        Self {
+            config: self.config.clone(),
+            cancel_token: None,
+            watching_join_handle: None,
+            shared_data: self.shared_data.clone(),
+            rx_event_broadcast: self.rx_event_broadcast.resubscribe(),
+        }
+    }
+}
+
 impl InMemoryStorageClient {
     pub fn new(config: InMemoryConfig) -> Self {
-        InMemoryStorageClient {
+        let (tx_event_broadcast, rx_event_broadcast) = tokio::sync::broadcast::channel(128);
+        Self {
             config,
             cancel_token: None,
-            place_locks: Default::default(),
-            revision: Arc::new(AtomicU64::new(1)),
-            token_ids: Arc::new(AtomicU64::new(1)),
-            tx_events: None,
+            watching_join_handle: None,
+            shared_data: Arc::new(RwLock::new(StorageClientData {
+                place_locks: Default::default(),
+                revision: Arc::new(AtomicU64::new(2)),
+                token_ids: Arc::new(AtomicU64::new(1)),
+                tx_event_broadcast,
+                net_ids: PetriNetIds::default(),
+                next_tr_id: AtomicU64::new(1),
+                next_pl_id: AtomicU64::new(1),
+            })),
+            rx_event_broadcast,
+        }
+    }
+
+    /// Warning: Clones in memory client will only receive events AFTER cloning.
+    /// Always create all clones before starting to run a net
+    pub fn clone_with_config(&self, config: InMemoryConfig) -> Self {
+        // TODO: contraint could be enforced dynamically or - with a modified design - statically
+        Self {
+            config,
+            cancel_token: None,
+            watching_join_handle: None,
+            shared_data: self.shared_data.clone(),
+            rx_event_broadcast: self.rx_event_broadcast.resubscribe(),
         }
     }
 
     async fn _create_initial_events(
         &mut self,
         tx: &tokio::sync::mpsc::Sender<NetChangeEvent>,
-        _place_ids: &HashSet<PlaceId>,
     ) -> Result<Revision> {
-        self.tx_events = Some(tx.clone());
         // construct initial event
         let mut initial_event = NetChangeEvent::new(Revision(0));
         initial_event.changes.push(NetChange::Reset());
@@ -116,7 +158,25 @@ impl InMemoryStorageClient {
         cancelable_send!(tx, initial_event, cancel_token, "Net event change receiver")?;
         let start_event = NetChangeEvent::new(Revision(1));
         cancelable_send!(tx, start_event, cancel_token, "Net event change receiver")?;
-        Ok(self.revision.fetch_add(1, Ordering::SeqCst).into())
+        Ok(self.shared_data.read().await.revision.load(Ordering::SeqCst).into())
+    }
+
+    async fn _watch_events(
+        tx_events: tokio::sync::mpsc::Sender<NetChangeEvent>,
+        mut broadcast_receiver: tokio::sync::broadcast::Receiver<NetChangeEvent>,
+    ) -> Result<()> {
+        loop {
+            let res = broadcast_receiver.recv().await;
+            let evt = if let Ok(evt) = res {
+                evt
+            } else {
+                return Err(PetriError::Cancelled());
+            };
+            let res = tx_events.send(evt).await;
+            if res.is_err() {
+                return Err(PetriError::Cancelled());
+            }
+        }
     }
 
     pub(super) async fn _get_next_id(kv: &mut KvClient, prefix: &str, ktype: &str) -> Result<i64> {
@@ -158,6 +218,10 @@ impl storage::traits::StorageClient for InMemoryStorageClient {
     type PlaceLockClient = InMemoryPlaceLock;
     type Config = InMemoryConfig;
 
+    fn from_config(config: Self::Config) -> InMemoryStorageClient {
+        InMemoryStorageClient::new(config)
+    }
+
     fn config(&self) -> &Self::Config {
         &self.config
     }
@@ -174,6 +238,11 @@ impl storage::traits::StorageClient for InMemoryStorageClient {
         if let Some(cancel_token) = self.cancel_token.as_ref() {
             cancel_token.cancel();
         }
+        if let Some(join_handle) = self.watching_join_handle.as_mut() {
+            let _ = join!(join_handle); // we ignore any errors from inside that handle
+        }
+        self.cancel_token = None;
+        self.watching_join_handle = None;
         self.cancel_token = None;
     }
 
@@ -188,29 +257,40 @@ impl storage::traits::StorageClient for InMemoryStorageClient {
         Ok(())
     }
 
-    fn create_transition_client(
+    async fn create_transition_client(
         &mut self,
         transition_id: TransitionId,
     ) -> Result<InMemoryTransitionClient> {
+        let sd = self.shared_data.read().await;
         Ok(InMemoryTransitionClient {
             transition_id,
-            tx_events: self.tx_events.clone().unwrap(),
-            revision: Arc::clone(&self.revision),
-            token_ids: Arc::clone(&self.token_ids),
+            tx_event_broadcast: sd.tx_event_broadcast.clone(),
+            revision: Arc::clone(&sd.revision),
+            token_ids: Arc::clone(&sd.token_ids),
         })
     }
     #[tracing::instrument(level = "info", skip(builder), fields(transition_count = builder.transitions().len(), place_count = builder.transitions().len()) )]
     async fn assign_ids(&mut self, builder: &PetriNetBuilder) -> Result<PetriNetIds> {
         let cancel_token = self._cancel_token()?.clone();
         let op = async {
-            let mut result = PetriNetIds::default();
-            for (tr_idx, tr_name) in builder.transitions().keys().enumerate() {
-                result.transitions.insert(tr_name.clone(), TransitionId((tr_idx + 1) as u64));
+            let mut sd = self.shared_data.write().await;
+            // TODO: unnecessary clone because the borrow checker complains otherwise.
+            // Can be fixed by changing the datastructure slightly
+            let mut net_ids = sd.net_ids.clone();
+            for tr_name in builder.transitions().keys() {
+                net_ids
+                    .transitions
+                    .entry(tr_name.clone())
+                    .or_insert_with(|| TransitionId(sd.next_tr_id.fetch_add(1, Ordering::SeqCst)));
             }
-            for (pl_idx, pl_name) in builder.places().keys().enumerate() {
-                result.places.insert(pl_name.clone(), PlaceId((pl_idx + 1) as u64));
+            for pl_name in builder.places().keys() {
+                net_ids
+                    .places
+                    .entry(pl_name.clone())
+                    .or_insert_with(|| PlaceId(sd.next_pl_id.fetch_add(1, Ordering::SeqCst)));
             }
-            Ok::<PetriNetIds, PetriError>(result)
+            sd.net_ids = net_ids;
+            Ok::<PetriNetIds, PetriError>(sd.net_ids.clone())
         };
         let result = select! {
             res = op => {res?},
@@ -220,25 +300,46 @@ impl storage::traits::StorageClient for InMemoryStorageClient {
         Ok(result)
     }
 
-    #[tracing::instrument(level = "info", skip(tx_events, place_ids, _transition_ids))]
+    #[tracing::instrument(level = "info", skip(tx_events, _place_ids, _transition_ids))]
     async fn load_data(
         &mut self,
         tx_events: tokio::sync::mpsc::Sender<NetChangeEvent>,
-        place_ids: HashSet<PlaceId>,
+        _place_ids: HashSet<PlaceId>,
         _transition_ids: HashSet<TransitionId>,
     ) -> Result<()> {
-        let _revision = self._create_initial_events(&tx_events, &place_ids).await?;
+        let broadcast_receiver = self.shared_data.read().await.tx_event_broadcast.subscribe();
+        let _revision = self._create_initial_events(&tx_events).await?;
+        let cancel_token = self._cancel_token()?.clone();
+        self.watching_join_handle = Some(tokio::spawn(async move {
+            let watcher_fut = InMemoryStorageClient::_watch_events(tx_events, broadcast_receiver);
+            tokio::pin!(watcher_fut);
+            select! {
+                res = watcher_fut =>{ match res {
+                    Err(PetriError::Cancelled()) => {}
+                    Err(err) => {error!("Watching in memory storage for changes failed with: {}.", err); cancel_token.cancel();}
+                    _ => {}
+                }}
+                _ = cancel_token.cancelled() => {}
+            }
+        }));
         Ok(())
     }
 
-    fn place_lock_client(&mut self, pl_id: PlaceId) -> Result<Arc<InMemoryPlaceLock>> {
+    async fn place_lock_client(&mut self, pl_id: PlaceId) -> Result<Arc<InMemoryPlaceLock>> {
         // Note: this seems inefficient (depending on clone cost)
         // Will hopefully not be called too often
-        let place_lock = self
-            .place_locks
-            .entry(pl_id)
-            .or_insert_with(|| Arc::new(InMemoryPlaceLock::new(pl_id)));
-        Ok(place_lock.clone())
+        let sd = self.shared_data.read().await;
+        if let Some(pl_lock) = sd.place_locks.get(&pl_id) {
+            Ok(pl_lock.clone())
+        } else {
+            drop(sd);
+            let mut sd = self.shared_data.write().await;
+            let pl_lock = sd
+                .place_locks
+                .entry(pl_id)
+                .or_insert_with(|| Arc::new(InMemoryPlaceLock::new(pl_id)));
+            Ok(pl_lock.clone())
+        }
     }
 }
 
