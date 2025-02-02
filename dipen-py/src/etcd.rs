@@ -12,7 +12,7 @@ pub struct PyETCDConfig {
 #[pymethods]
 impl PyETCDConfig {
     #[new]
-    #[pyo3(signature = (endpoints, prefix="", node_name="default_node", region="default", lease_id=None, lease_ttl=Duration::from_secs(10), username=None, password=None))]
+    #[pyo3(signature = (endpoints, prefix="", node_name="default_node", region="default", lease_id=None, lease_ttl=Duration::from_secs(10), username=None, password=None, lease_revoke_delay=Duration::from_secs(1)))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         endpoints: Vec<String>,
@@ -23,6 +23,7 @@ impl PyETCDConfig {
         lease_ttl: Duration,
         username: Option<&str>,
         password: Option<&str>,
+        lease_revoke_delay: Duration,
     ) -> Self {
         let mut client_options = etcd_client::ConnectOptions::new();
         if let (Some(u), Some(p)) = (username, password) {
@@ -37,6 +38,7 @@ impl PyETCDConfig {
                 connect_options: Some(client_options),
                 lease_id: lease_id.map(|lid| lid.into()),
                 lease_ttl,
+                lease_revoke_delay,
             },
         }
     }

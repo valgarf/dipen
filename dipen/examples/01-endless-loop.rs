@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use dipen::{
     error::Result as PetriResult,
@@ -57,6 +57,7 @@ async fn run() -> PetriResult<()> {
         .prefix("01-endless-loop/")
         .node_name("node1")
         .region("region-1")
+        .lease_revoke_delay(Duration::from_millis(10))
         .build()?;
 
     let etcd = ETCDStorageClient::new(config);

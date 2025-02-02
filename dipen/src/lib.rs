@@ -154,6 +154,7 @@
 //!         .prefix("doctest-01/") // all etcd keys are prefixed with that.
 //!         .node_name("node1") // to identify the node in logs / on the etcd server
 //!         .region("test-region") // must match your transition regions
+//! #       .lease_revoke_delay(Duration::from_millis(10))
 //!         .build()?;
 //!     let etcd = ETCDStorageClient::new(config);
 //!

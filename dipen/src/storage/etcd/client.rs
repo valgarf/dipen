@@ -55,6 +55,8 @@ pub struct ETCDConfig {
     pub lease_id: Option<LeaseId>,
     #[builder(default = "Duration::from_secs(10)")]
     pub lease_ttl: Duration,
+    #[builder(default = "Duration::from_secs(1)")]
+    pub lease_revoke_delay: Duration,
 }
 
 impl ETCDConfigBuilder {
@@ -659,6 +661,7 @@ impl ETCDStorageClient {
         mut lease_client: etcd_client::LeaseClient,
         lease_id: LeaseId,
         lease_ttl: Duration,
+        lease_revoke_delay: Duration,
     ) {
         select! {
             res = ETCDStorageClient::_keep_alive_loop(&mut lease_client, lease_id, lease_ttl) => {let _ = res.inspect_err(|err|{
@@ -667,10 +670,10 @@ impl ETCDStorageClient {
             _ = cancel_token.cancelled() => {}
         };
         cancel_token.cancel();
-        let wait_time = lease_ttl / 10;
+        let wait_time = min(lease_revoke_delay, lease_ttl / 4);
         // give some time to shut everything else down.
         info!("Waiting {:#?} before revoking lease.", wait_time);
-        tokio::time::sleep(lease_ttl / 10).await;
+        tokio::time::sleep(wait_time).await;
         if let Err(err) = lease_client.revoke(lease_id.0).await {
             warn!("Revoking lease failed with: {}.", err);
         } else {
@@ -748,6 +751,7 @@ impl storage::traits::StorageClient for ETCDStorageClient {
                 self._client_mut()?.lease_client(),
                 self._lease()?,
                 self.config.lease_ttl,
+                self.config.lease_revoke_delay,
             )));
             Ok(())
         }
