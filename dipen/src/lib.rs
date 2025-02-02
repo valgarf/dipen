@@ -177,7 +177,7 @@
 //!            || ctx.arcs_out().count() != 1
 //!            || ctx.arcs_cond().count() != 1
 //!         {
-//!             return Err(CreationError::new("Need exactly one incoming and one outgoing arc"));
+//!             return Err(CreationError::new("Need exactly one conditional outgoing arc"));
 //!         }
 //!         let pl_out = ctx.arcs_out().next().unwrap().place_context().place_id();
 //!         Ok(Self { pl_out })

@@ -41,20 +41,40 @@ pub struct ETCDStorageClient {
 
 #[derive(Builder, Clone)]
 pub struct ETCDConfig {
+    /// list of endpoints to try, each one in a 'hostname:port' or 'ip-address:port' format
     #[builder(setter(custom))]
     pub endpoints: Vec<String>,
+    /// prefix to be used on the etcd server. Will be put in front of every key, allows to separate
+    /// the use of this client from other programs using etcd - including other independently
+    /// running petri nets
     #[builder(setter(custom), default = "\"/\".to_string()")]
     pub prefix: String,
+    /// Name of this node, used for logging and information put on etcd
     #[builder(setter(into))]
     pub node_name: String,
+    /// Region of the petri net to run. Only one runner can run one region at a time.
+    /// Starting multiple runners for the same region, only one will run while the others keep their
+    /// local petri net up to date and wait until the active runner dies. Allows a fast switch to a
+    /// new runner on failure (and allows updates without significant downtime)
     #[builder(setter(into), default)]
     pub region: String,
+    /// Addition etcd connect options
     #[builder(setter(custom), default)]
     pub connect_options: Option<etcd_client::ConnectOptions>,
+    /// lease id to use. If empty, the etcd server will select one.
+    /// If the lease already exists and is connected to etcd, an error is returned when trying to
+    /// obtain the lease. If you want to
     #[builder(setter(strip_option), default)]
     pub lease_id: Option<LeaseId>,
+    /// Time to live of the lease. Server will assume this client to be dead, if it does not get a
+    /// message from us in this timeframe.
+    /// Client will send keep alive messages in a lease_ttl/5 interval.
+    /// If we do not get a reply from the server in a lease_ttl/2 timeframe, we assume that we have
+    /// lost the connection and shut ourselves down.
     #[builder(default = "Duration::from_secs(10)")]
     pub lease_ttl: Duration,
+    /// When shutting down the runner, we wait for a short while for transitions to be cancelled
+    /// before revoking the lease. Maximum value: lease_ttl/4
     #[builder(default = "Duration::from_secs(1)")]
     pub lease_revoke_delay: Duration,
 }

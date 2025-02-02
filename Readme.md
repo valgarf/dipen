@@ -36,40 +36,41 @@ might want to look at the rust documentation.
 This library is currently a proof of concept. For it to be usable in a productions setting, the 
 better part of the following list of features should be implemented (and probably more stuff I have not thought about yet):
 
-- improve python bindings
-    * error handling could be improved (what should a transition do if the python run function fails?)
-    * improve logging to  include fields from scopes, log scope start / end
-    * registry data not passed through to validate / create
-    * pass cancellation through to running python transitions
-- tests for this package
-- simplify testing for users
-    * implement a 'local' runner for testing (extract etcd logic into traits)
-    * snapshottest, i.e. replay run based on a stored run, allow storing the run (special runner?)
-    * export (parts of) the etcd history to be used for tests
-- Visualization 
-    * live view of current state
-      - mark running transitions? currently not stored on etcd
-      - human readable reasoning for not firing?
-    * history from etcd?
-    * export of petri net as graph
-- documentation
-    * python & rust are both rudimentary
-    * more examples 
+- [ ] improve python bindings
+    * [ ] error handling could be improved (what should a transition do if the python run function fails?)
+    * [ ] improve logging to  include fields from scopes, log scope start / end
+    * [ ] registry data not passed through to validate / create
+    * [ ] pass cancellation through to running python transitions
+- [ ] tests for this package
+- [ ] simplify testing for users
+    * [x] implement a 'local' runner for testing (extract etcd logic into traits)
+    * [ ] auto detect 'finished' state for single testing runners.
+    * [ ] snapshottest, i.e. replay run based on a stored run, allow storing the run (special runner?)
+    * [ ] export (parts of) the etcd history to be used for tests
+- [ ] Visualization 
+    * [ ] live view of current state
+      - [ ] mark running transitions? currently not stored on etcd
+      - [ ] human readable reasoning for not firing?
+    * [ ] history from etcd?
+    * [ ] export of petri net as graph
+- [ ] documentation
+    * [ ] python & rust are both rudimentary
+    * [ ] more examples 
       -> need ideas for a nontrivial but not too complex workflow
       -> simulating an intersection?
-- time data: etcd has no synchronized clock in any way
-    * store 'last_changed', 'last_start_firing', 'last_finished_firing', etc. time from local time?
+- [ ] time data: etcd has no synchronized clock in any way
+    * [ ] store 'last_changed', 'last_start_firing', 'last_finished_firing', etc. time from local time?
       -> startup time for initial load? 
-    * store local time of runners on etcd with every update? Could be used in visualization to show
+    * [ ] store local time of runners on etcd with every update? Could be used in visualization to show
       an estimated time of the last change
-- migration strategies / manual interaction:
-    * remove transitions from own region on etcd, if not in current configuration?
+- [ ] migration strategies / manual interaction:
+    * [ ] remove transitions from own region on etcd, if not in current configuration?
       -> 'transfer' of transition region: first update runner that does not use the transition anymore, then update runner for the new region
-    * allow manual blocking of regions / transitions (will not start firing)
-    * allow manual cancellation of regions / transitins (cancel currently running)
-    * prepared 'manual transitions' that only fire on manual input (with additional provided data)?
-    * 'ad hoc' manual transtions that take / place from / to arbitrary places with arbitrary updates to modify state?
-- statistics (transitions / s, how often was each transition fired)? 
+    * [ ] allow manual blocking of regions / transitions (will not start firing)
+    * [ ] allow manual cancellation of regions / transitins (cancel currently running)
+    * [ ] prepared 'manual transitions' that only fire on manual input (with additional provided data)?
+    * [ ] 'ad hoc' manual transtions that take / place from / to arbitrary places with arbitrary updates to modify state?
+- [ ] statistics (transitions / s, how often was each transition fired)? 
 
  
 ## License
